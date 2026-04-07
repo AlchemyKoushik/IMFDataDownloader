@@ -1,6 +1,7 @@
 import {
   ImfApiResponse,
   ImfCountriesResponse,
+  ImfDataMapperResponse,
   ImfIndicatorsResponse,
   IndicatorOption,
   SelectOption,
@@ -16,14 +17,32 @@ const METADATA_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const responseCache = new Map<string, { data: unknown; expiresAt: number }>();
 const inFlightRequests = new Map<string, Promise<unknown>>();
 
-const REQUEST_HEADERS = {
-  Accept: "application/json",
+const REQUEST_HEADER_SETS: Array<Record<string, string>> = [
+  {
+    Accept: "application/json,text/plain,*/*",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Cache-Control": "no-cache",
+    Pragma: "no-cache",
+    Referer: "https://www.imf.org/external/datamapper/",
+    "User-Agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36",
+  },
+  {
+    Accept: "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "User-Agent": "Mozilla/5.0 (compatible; IMFDataDownloader/1.0)",
+  },
+];
+
+const DEFAULT_REQUEST_HEADERS: Record<string, string> = {
+  Accept: "application/json,text/plain,*/*",
   "Accept-Language": "en-US,en;q=0.9",
-  "Accept-Encoding": "gzip, deflate, br",
   "User-Agent": "Mozilla/5.0 (compatible; IMFDataDownloader/1.0)",
 };
 
 const normalizeParam = (value: string): string => value.trim().toUpperCase();
+
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 
 const getCachedResponse = <T>(cacheKey: string): T | null => {
   const cached = responseCache.get(cacheKey);
@@ -48,6 +67,15 @@ const sanitizeText = (value: string): string =>
     .replace(/<[^>]+>/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+
+const getRequestHeaders = (attempt: number): HeadersInit =>
+  REQUEST_HEADER_SETS[Math.min(attempt - 1, REQUEST_HEADER_SETS.length - 1)] ?? DEFAULT_REQUEST_HEADERS;
+
+const isAccessDeniedResponse = (responseText: string): boolean => {
+  const normalizedText = sanitizeText(responseText).toLowerCase();
+
+  return normalizedText.includes("access denied") || normalizedText.includes("you don't have permission");
+};
 
 const compareOptions = (left: SelectOption, right: SelectOption): number => {
   const labelComparison = left.label.localeCompare(right.label, undefined, { sensitivity: "base" });
@@ -105,7 +133,7 @@ async function fetchImfJson<T>({
       try {
         response = await fetch(url, {
           method: "GET",
-          headers: REQUEST_HEADERS,
+          headers: getRequestHeaders(attempt),
           cache: "no-store",
           signal,
         });
@@ -127,6 +155,16 @@ async function fetchImfJson<T>({
         });
       }
 
+      const responseText = await response.text();
+
+      if (response.status === 403 || isAccessDeniedResponse(responseText)) {
+        throw new RequestError("The IMF DataMapper service temporarily blocked this server request. Please try again shortly.", {
+          code: "IMF_ACCESS_DENIED",
+          status: 503,
+          retryable: true,
+        });
+      }
+
       if (response.status >= 500) {
         throw new RequestError("The IMF API is temporarily unavailable.", {
           code: "IMF_UPSTREAM_5XX",
@@ -139,16 +177,15 @@ async function fetchImfJson<T>({
         throw new RequestError(
           response.status === 404
             ? "The selected country and indicator combination could not be found."
-            : "The IMF API rejected this request. Please verify the selected values.",
+            : "The IMF DataMapper request could not be completed right now.",
           {
             code: response.status === 404 ? "IMF_SERIES_NOT_FOUND" : "IMF_INVALID_REQUEST",
-            status: response.status === 404 ? 404 : 400,
+            status: response.status === 404 ? 404 : 502,
             retryable: false,
           },
         );
       }
 
-      const responseText = await response.text();
       if (!responseText.trim()) {
         throw new RequestError("The IMF API returned an empty response.", {
           code: "IMF_EMPTY_RESPONSE",
@@ -214,13 +251,40 @@ export async function fetchImfData(country: string, indicator: string): Promise<
   const normalizedCountry = normalizeParam(country);
   const normalizedIndicator = normalizeParam(indicator);
 
-  return fetchImfJson<ImfApiResponse>({
+  const response = await fetchImfJson<ImfDataMapperResponse>({
     cacheKey: `data:${normalizedCountry}::${normalizedIndicator}`,
     url: buildRequestUrl(normalizedCountry, normalizedIndicator),
     ttlMs: DATA_CACHE_TTL_MS,
     invalidPayloadCode: "IMF_INVALID_PAYLOAD",
     invalidPayloadMessage: "The IMF API returned malformed data.",
   });
+
+  const indicatorValues = response.values?.[normalizedIndicator];
+  if (!isRecord(indicatorValues)) {
+    throw new RequestError("No data found for the selected country and indicator.", {
+      code: "NO_DATA",
+      status: 404,
+      retryable: false,
+    });
+  }
+
+  const countryValues = indicatorValues[normalizedCountry];
+  if (!isRecord(countryValues)) {
+    throw new RequestError("No data found for the selected country and indicator.", {
+      code: "NO_DATA",
+      status: 404,
+      retryable: false,
+    });
+  }
+
+  return {
+    api: response.api,
+    values: {
+      [normalizedIndicator]: {
+        [normalizedCountry]: countryValues as Record<string, number | string | null>,
+      },
+    },
+  };
 }
 
 export async function fetchImfCountries(): Promise<SelectOption[]> {

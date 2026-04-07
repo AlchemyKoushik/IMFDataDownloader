@@ -398,7 +398,7 @@ function SearchableSelector<T extends SelectOption>({
 
                       <span className="resultContent">
                         <span className="resultTitle">{option.label}</span>
-                        <span className="resultMeta">{metaText ? `${option.value} • ${metaText}` : option.value}</span>
+                        <span className="resultMeta">{metaText ? `${option.value} | ${metaText}` : option.value}</span>
                       </span>
                     </button>
                   );
@@ -593,7 +593,7 @@ export default function HomePage() {
             disabled={isMetadataLoading || isLoading}
             emptyMessage="No indicator matched that search."
             extraText={(option: IndicatorOption) =>
-              [option.unit, option.dataset, option.source].filter(Boolean).join(" • ")
+              [option.unit, option.dataset, option.source].filter(Boolean).join(" | ")
             }
             helperText="Search by name, code, unit, dataset, or source. Scroll and press Enter to pick."
             id="indicator-search"

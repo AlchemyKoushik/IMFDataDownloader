@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 import { parseImfData } from "@/lib/dataParser";
 import { generateExcelBuffer } from "@/lib/excelGenerator";
-import { fetchImfCountries, fetchImfData, fetchImfIndicators } from "@/lib/imfClient";
+import { fetchImfData } from "@/lib/imfClient";
 import { RequestError } from "@/lib/retryHandler";
 import { ApiErrorPayload } from "@/types/imf";
 import { logger } from "@/utils/logger";
@@ -39,26 +39,6 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
   }
 
   try {
-    try {
-      const [countries, indicators] = await Promise.all([fetchImfCountries(), fetchImfIndicators()]);
-      const countrySet = new Set(countries.map((option) => option.value));
-      const indicatorSet = new Set(indicators.map((option) => option.value));
-
-      if (!countrySet.has(country)) {
-        return createErrorResponse(400, "UNSUPPORTED_COUNTRY", "The selected country is not supported.");
-      }
-
-      if (!indicatorSet.has(indicator)) {
-        return createErrorResponse(400, "UNSUPPORTED_INDICATOR", "The selected indicator is not supported.");
-      }
-    } catch (error) {
-      logger.warn("Metadata validation skipped because IMF metadata could not be loaded.", {
-        country,
-        indicator,
-        error,
-      });
-    }
-
     const rawResponse = await fetchImfData(country, indicator);
     const rows = parseImfData(rawResponse);
 

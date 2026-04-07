@@ -27,7 +27,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en">
-      <body className={`${headingFont.variable} ${bodyFont.variable}`}>{children}</body>
+      <body suppressHydrationWarning className={`${headingFont.variable} ${bodyFont.variable}`}>
+        {children}
+      </body>
     </html>
   );
 }
