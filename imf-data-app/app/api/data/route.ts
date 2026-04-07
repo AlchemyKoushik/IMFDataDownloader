@@ -6,7 +6,7 @@ import { RequestError } from "@/lib/retryHandler";
 import { ApiErrorPayload, DataResponsePayload } from "@/types/imf";
 import { logger } from "@/utils/logger";
 
-export const runtime = "nodejs";
+export const runtime = "edge";
 export const dynamic = "force-dynamic";
 export const maxDuration = 45;
 

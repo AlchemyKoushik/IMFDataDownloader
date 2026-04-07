@@ -12,6 +12,7 @@ import { isAbortError, isRetryableRequestError, RequestError, retryWithBackoff }
 const IMF_BASE_URL = "https://www.imf.org/external/datamapper/api/v1";
 const METADATA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 const DATA_CACHE_TTL_MS = 60 * 60 * 1000;
+const IMF_REQUEST_DELAY_MS = 150;
 
 const responseCache = new Map<string, { data: unknown; expiresAt: number }>();
 const inFlightRequests = new Map<string, Promise<unknown>>();
@@ -49,10 +50,25 @@ const sanitizeText = (value: string): string =>
     .replace(/\s+/g, " ")
     .trim();
 
+const wait = async (durationMs: number): Promise<void> =>
+  new Promise((resolve) => {
+    setTimeout(resolve, durationMs);
+  });
+
 const isAccessDeniedResponse = (responseText: string): boolean => {
   const normalized = sanitizeText(responseText).toLowerCase();
 
   return normalized.includes("access denied") || normalized.includes("you don't have permission");
+};
+
+const isHtmlResponse = (contentType: string | null, responseText: string): boolean => {
+  const normalizedText = responseText.trim().toLowerCase();
+
+  return (
+    Boolean(contentType?.toLowerCase().includes("text/html")) ||
+    normalizedText.startsWith("<!doctype html") ||
+    normalizedText.startsWith("<html")
+  );
 };
 
 const compareOptions = (left: SelectOption, right: SelectOption): number => {
@@ -106,13 +122,14 @@ async function fetchImfJson<T>({
         url,
       });
 
+      await wait(IMF_REQUEST_DELAY_MS);
+
       let response: Response;
 
       try {
         response = await fetch(url, {
           method: "GET",
           headers: IMF_REQUEST_HEADERS,
-          cache: "no-store",
           signal,
         });
       } catch (error) {
@@ -134,9 +151,10 @@ async function fetchImfJson<T>({
       }
 
       const responseText = await response.text();
+      const contentType = response.headers.get("content-type");
 
-      if (response.status === 403 || isAccessDeniedResponse(responseText)) {
-        throw new RequestError("The IMF API temporarily blocked the upstream request.", {
+      if (response.status === 403 || isAccessDeniedResponse(responseText) || isHtmlResponse(contentType, responseText)) {
+        throw new RequestError("IMF API temporarily blocked upstream request", {
           code: "IMF_ACCESS_DENIED",
           status: 503,
           retryable: true,

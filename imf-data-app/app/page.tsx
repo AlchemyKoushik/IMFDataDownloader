@@ -61,6 +61,7 @@ const SEARCH_DEBOUNCE_MS = 300;
 
 const clientDataCache = new Map<string, CachedDataPayload>();
 const inFlightDataRequests = new Map<string, Promise<DataResponsePayload>>();
+let metadataRequestPromise: Promise<MetadataResponsePayload> | null = null;
 
 const useDebouncedValue = (value: string, delayMs: number): string => {
   const [debouncedValue, setDebouncedValue] = useState(value);
@@ -85,7 +86,6 @@ const fetchWithTimeout = async (url: string, init?: RequestInit): Promise<Respon
   try {
     return await fetch(url, {
       ...init,
-      cache: "no-store",
       signal: controller.signal,
     });
   } finally {
@@ -138,13 +138,23 @@ const writeCachedMetadata = (payload: MetadataResponsePayload): void => {
 };
 
 const fetchMetadata = async (): Promise<MetadataResponsePayload> => {
-  const response = await fetchWithTimeout("/api/metadata");
-
-  if (!response.ok) {
-    throw await readApiError(response, "Unable to load IMF metadata.", "METADATA_FAILED");
+  if (metadataRequestPromise) {
+    return metadataRequestPromise;
   }
 
-  return (await response.json()) as MetadataResponsePayload;
+  metadataRequestPromise = fetchWithTimeout("/api/metadata")
+    .then(async (response) => {
+      if (!response.ok) {
+        throw await readApiError(response, "Unable to load IMF metadata.", "METADATA_FAILED");
+      }
+
+      return (await response.json()) as MetadataResponsePayload;
+    })
+    .finally(() => {
+      metadataRequestPromise = null;
+    });
+
+  return metadataRequestPromise;
 };
 
 const getCachedDataResponse = (cacheKey: string): DataResponsePayload | null => {
