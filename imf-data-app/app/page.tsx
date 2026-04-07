@@ -3,14 +3,8 @@
 import type { FormEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 
-import {
-  ApiErrorPayload,
-  DataResponsePayload,
-  DownloadObservation,
-  IndicatorOption,
-  MetadataResponsePayload,
-  SelectOption,
-} from "@/types/imf";
+import { fetchMetadata, fetchSeriesData, ImfClientError } from "@/lib/imfClient";
+import { ApiErrorPayload, DownloadObservation, IndicatorOption, MetadataResponsePayload, SelectOption } from "@/types/imf";
 
 type NoticeTone = "idle" | "success" | "error" | "empty";
 
@@ -41,27 +35,10 @@ interface SearchableSelectorProps<T extends SelectOption> {
   setQuery: (value: string) => void;
 }
 
-interface CachedMetadataPayload {
-  expiresAt: number;
-  payload: MetadataResponsePayload;
-}
-
-interface CachedDataPayload {
-  expiresAt: number;
-  payload: DataResponsePayload;
-}
-
 const FRONTEND_TIMEOUT_MS = 20_000;
-const METADATA_STORAGE_KEY = "imf-metadata-cache-v2";
-const METADATA_STORAGE_TTL_MS = 24 * 60 * 60 * 1000;
-const DATA_CACHE_TTL_MS = 60 * 60 * 1000;
 const MAX_VISIBLE_RESULTS = 120;
 const PAGE_STEP = 8;
 const SEARCH_DEBOUNCE_MS = 300;
-
-const clientDataCache = new Map<string, CachedDataPayload>();
-const inFlightDataRequests = new Map<string, Promise<DataResponsePayload>>();
-let metadataRequestPromise: Promise<MetadataResponsePayload> | null = null;
 
 const useDebouncedValue = (value: string, delayMs: number): string => {
   const [debouncedValue, setDebouncedValue] = useState(value);
@@ -102,109 +79,10 @@ const readApiError = async (response: Response, fallbackMessage: string, fallbac
     message = payload.message ?? message;
     code = payload.code ?? code;
   } catch {
-    // Ignore malformed error payloads and use the default message.
+    // Ignore malformed error payloads and keep the fallback message.
   }
 
   return new ApiRequestError(message, response.status, code);
-};
-
-const readCachedMetadata = (): MetadataResponsePayload | null => {
-  try {
-    const rawValue = window.localStorage.getItem(METADATA_STORAGE_KEY);
-    if (!rawValue) {
-      return null;
-    }
-
-    const parsed = JSON.parse(rawValue) as CachedMetadataPayload;
-    if (!parsed?.expiresAt || !parsed.payload || parsed.expiresAt <= Date.now()) {
-      window.localStorage.removeItem(METADATA_STORAGE_KEY);
-      return null;
-    }
-
-    return parsed.payload;
-  } catch {
-    window.localStorage.removeItem(METADATA_STORAGE_KEY);
-    return null;
-  }
-};
-
-const writeCachedMetadata = (payload: MetadataResponsePayload): void => {
-  const cachedPayload: CachedMetadataPayload = {
-    expiresAt: Date.now() + METADATA_STORAGE_TTL_MS,
-    payload,
-  };
-
-  window.localStorage.setItem(METADATA_STORAGE_KEY, JSON.stringify(cachedPayload));
-};
-
-const fetchMetadata = async (): Promise<MetadataResponsePayload> => {
-  if (metadataRequestPromise) {
-    return metadataRequestPromise;
-  }
-
-  metadataRequestPromise = fetchWithTimeout("/api/metadata")
-    .then(async (response) => {
-      if (!response.ok) {
-        throw await readApiError(response, "Unable to load IMF metadata.", "METADATA_FAILED");
-      }
-
-      return (await response.json()) as MetadataResponsePayload;
-    })
-    .finally(() => {
-      metadataRequestPromise = null;
-    });
-
-  return metadataRequestPromise;
-};
-
-const getCachedDataResponse = (cacheKey: string): DataResponsePayload | null => {
-  const cached = clientDataCache.get(cacheKey);
-
-  if (!cached) {
-    return null;
-  }
-
-  if (cached.expiresAt <= Date.now()) {
-    clientDataCache.delete(cacheKey);
-    return null;
-  }
-
-  return cached.payload;
-};
-
-const fetchSeriesData = async (country: string, indicator: string): Promise<DataResponsePayload> => {
-  const cacheKey = `${country}:${indicator}`;
-  const cached = getCachedDataResponse(cacheKey);
-  if (cached) {
-    return cached;
-  }
-
-  const existingRequest = inFlightDataRequests.get(cacheKey);
-  if (existingRequest) {
-    return existingRequest;
-  }
-
-  const requestPromise = fetchWithTimeout(
-    `/api/data?country=${encodeURIComponent(country)}&indicator=${encodeURIComponent(indicator)}`,
-  )
-    .then(async (response) => {
-      if (!response.ok) {
-        throw await readApiError(response, "Unable to fetch IMF data.", "DATA_FETCH_FAILED");
-      }
-
-      const payload = (await response.json()) as DataResponsePayload;
-      clientDataCache.set(cacheKey, {
-        expiresAt: Date.now() + DATA_CACHE_TTL_MS,
-        payload,
-      });
-      return payload;
-    })
-    .finally(() => {
-      inFlightDataRequests.delete(cacheKey);
-    });
-
-  inFlightDataRequests.set(cacheKey, requestPromise);
-  return requestPromise;
 };
 
 const requestWorkbook = async (rows: DownloadObservation[]): Promise<Blob> => {
@@ -559,31 +437,11 @@ export default function HomePage() {
     let isMounted = true;
 
     const hydrateMetadata = async (): Promise<void> => {
-      const cached = readCachedMetadata();
-      if (cached && isMounted) {
-        const nextCountry = defaultOptionValue(cached.countries, "USA");
-        const nextIndicator = defaultOptionValue(cached.indicators, "NGDP_RPCH");
-
-        setMetadata(cached);
-        setCountry(nextCountry);
-        setIndicator(nextIndicator);
-        setCountryQuery(cached.countries.find((option) => option.value === nextCountry)?.label ?? "");
-        setIndicatorQuery(cached.indicators.find((option) => option.value === nextIndicator)?.label ?? "");
-        setNoticeTone("idle");
-        setNoticeMessage(
-          `Loaded ${cached.countries.length} countries/regions and ${cached.indicators.length} indicators from cache.`,
-        );
-        setIsMetadataLoading(false);
-        return;
-      }
-
       try {
         const payload = await fetchMetadata();
         if (!isMounted) {
           return;
         }
-
-        writeCachedMetadata(payload);
 
         const nextCountry = defaultOptionValue(payload.countries, "USA");
         const nextIndicator = defaultOptionValue(payload.indicators, "NGDP_RPCH");
@@ -602,11 +460,7 @@ export default function HomePage() {
           return;
         }
 
-        if (error instanceof Error && error.name === "AbortError") {
-          setMetadataError("The IMF catalog request timed out. Please refresh and try again.");
-          setNoticeTone("error");
-          setNoticeMessage("The IMF catalog request timed out. Please refresh and try again.");
-        } else if (error instanceof ApiRequestError) {
+        if (error instanceof ImfClientError) {
           setMetadataError(error.message);
           setNoticeTone("error");
           setNoticeMessage(error.message);
@@ -664,7 +518,7 @@ export default function HomePage() {
       setNoticeTone("success");
       setNoticeMessage(`Downloaded ${rows.length} IMF observations successfully.`);
     } catch (error) {
-      if (error instanceof ApiRequestError) {
+      if (error instanceof ImfClientError) {
         if (error.code === "NO_DATA") {
           setNoticeTone("empty");
           setNoticeMessage("No data available for this dataset.");
@@ -672,6 +526,9 @@ export default function HomePage() {
           setNoticeTone("error");
           setNoticeMessage(error.message);
         }
+      } else if (error instanceof ApiRequestError) {
+        setNoticeTone("error");
+        setNoticeMessage(error.message);
       } else if (error instanceof Error && error.name === "AbortError") {
         setNoticeTone("error");
         setNoticeMessage("The request took too long. Please try again in a moment.");
@@ -691,8 +548,8 @@ export default function HomePage() {
           <span className="eyebrow">Production-ready IMF downloader</span>
           <h1>IMF World Economic Outlook Data.</h1>
           <p>
-            Search the cached IMF catalog, fetch time-series data through the proxy API layer, and generate a clean
-            Excel export through a Vercel-safe serverless workflow.
+            Search the cached IMF catalog, fetch time-series data through resilient public proxy connectors, and
+            generate a clean Excel export through a Vercel-safe serverless workflow.
           </p>
 
           <div className="statsRow" aria-label="Catalog statistics">

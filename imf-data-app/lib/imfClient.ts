@@ -1,75 +1,58 @@
 import {
+  DataResponsePayload,
   ImfCountriesResponse,
   ImfDataMapperResponse,
   ImfIndicatorsResponse,
   IndicatorOption,
+  MetadataResponsePayload,
   SelectOption,
 } from "@/types/imf";
-import { logger } from "@/utils/logger";
-
-import { isAbortError, isRetryableRequestError, RequestError, retryWithBackoff } from "./retryHandler";
 
 const IMF_BASE_URL = "https://www.imf.org/external/datamapper/api/v1";
-const METADATA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
-const DATA_CACHE_TTL_MS = 60 * 60 * 1000;
-const IMF_REQUEST_DELAY_MS = 150;
+const PROXY_PREFIXES = ["https://api.allorigins.win/raw?url=", "https://corsproxy.io/?"];
+const REQUEST_TIMEOUT_MS = 10_000;
+const METADATA_STORAGE_KEY = "imf-metadata-cache-v3";
+const METADATA_TTL_MS = 24 * 60 * 60 * 1000;
+const DATA_TTL_MS = 60 * 60 * 1000;
+const REQUEST_DELAY_MS = 150;
+const RETRY_DELAYS_MS = [300, 600];
 
-const responseCache = new Map<string, { data: unknown; expiresAt: number }>();
-const inFlightRequests = new Map<string, Promise<unknown>>();
+interface CachedPayload<T> {
+  expiresAt: number;
+  payload: T;
+}
 
-const IMF_REQUEST_HEADERS: Record<string, string> = {
-  Accept: "application/json",
-  "Accept-Language": "en-US,en;q=0.9",
-  Origin: "https://www.imf.org",
-  Referer: "https://www.imf.org/",
-  "User-Agent": "Mozilla/5.0",
-};
+export class ImfClientError extends Error {
+  public readonly code: string;
+  public readonly status: number;
 
-const normalizeParam = (value: string): string => value.trim().toUpperCase();
-
-const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
-
-const getCachedResponse = <T>(cacheKey: string): T | null => {
-  const cached = responseCache.get(cacheKey);
-
-  if (!cached) {
-    return null;
+  constructor(message: string, status = 500, code = "IMF_CLIENT_ERROR") {
+    super(message);
+    this.name = "ImfClientError";
+    this.code = code;
+    this.status = status;
   }
+}
 
-  if (cached.expiresAt <= Date.now()) {
-    responseCache.delete(cacheKey);
-    return null;
-  }
-
-  return cached.data as T;
-};
-
-const sanitizeText = (value: string): string =>
-  value
-    .replace(/<[^>]+>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+const dataCache = new Map<string, CachedPayload<DataResponsePayload>>();
+const inFlightDataRequests = new Map<string, Promise<DataResponsePayload>>();
+let metadataMemoryCache: CachedPayload<MetadataResponsePayload> | null = null;
+let metadataRequestPromise: Promise<MetadataResponsePayload> | null = null;
 
 const wait = async (durationMs: number): Promise<void> =>
   new Promise((resolve) => {
     setTimeout(resolve, durationMs);
   });
 
-const isAccessDeniedResponse = (responseText: string): boolean => {
-  const normalized = sanitizeText(responseText).toLowerCase();
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 
-  return normalized.includes("access denied") || normalized.includes("you don't have permission");
-};
+const normalizeCode = (value: string): string => value.trim().toUpperCase();
 
-const isHtmlResponse = (contentType: string | null, responseText: string): boolean => {
-  const normalizedText = responseText.trim().toLowerCase();
-
-  return (
-    Boolean(contentType?.toLowerCase().includes("text/html")) ||
-    normalizedText.startsWith("<!doctype html") ||
-    normalizedText.startsWith("<html")
-  );
-};
+const sanitizeText = (value: string): string =>
+  value
+    .replace(/<[^>]+>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 
 const compareOptions = (left: SelectOption, right: SelectOption): number => {
   const labelComparison = left.label.localeCompare(right.label, undefined, { sensitivity: "base" });
@@ -81,256 +64,298 @@ const compareOptions = (left: SelectOption, right: SelectOption): number => {
   return left.value.localeCompare(right.value, undefined, { sensitivity: "base" });
 };
 
-interface FetchJsonOptions {
-  cacheKey: string;
-  invalidPayloadCode: string;
-  invalidPayloadMessage: string;
-  ttlMs: number;
-  url: string;
-}
+const compareYears = (left: string, right: string): number => {
+  const leftNumeric = Number(left);
+  const rightNumeric = Number(right);
 
-async function fetchImfJson<T>({
-  cacheKey,
-  invalidPayloadCode,
-  invalidPayloadMessage,
-  ttlMs,
-  url,
-}: FetchJsonOptions): Promise<T> {
-  const cached = getCachedResponse<T>(cacheKey);
-  if (cached) {
-    logger.info("Serving IMF resource from cache.", {
-      cacheKey,
-      url,
-    });
-    return cached;
+  if (Number.isFinite(leftNumeric) && Number.isFinite(rightNumeric)) {
+    return leftNumeric - rightNumeric;
   }
 
-  const existingRequest = inFlightRequests.get(cacheKey);
-  if (existingRequest) {
-    logger.info("Reusing in-flight IMF request.", {
-      cacheKey,
-      url,
-    });
-    return existingRequest as Promise<T>;
+  return left.localeCompare(right, undefined, { sensitivity: "base" });
+};
+
+const isHtmlPayload = (value: string): boolean => {
+  const normalized = value.trim().toLowerCase();
+  return normalized.startsWith("<!doctype html") || normalized.startsWith("<html");
+};
+
+const isBlockedPayload = (value: string): boolean => {
+  const normalized = sanitizeText(value).toLowerCase();
+
+  return (
+    normalized.includes("access denied") ||
+    normalized.includes("temporarily unavailable") ||
+    normalized.includes("too many requests") ||
+    normalized.includes("rate limit")
+  );
+};
+
+const isProxyErrorPayload = (value: unknown): boolean =>
+  isRecord(value) && (typeof value.error === "string" || (value.error === true && typeof value.message === "string"));
+
+const createProxyUrl = (proxyPrefix: string, targetUrl: string): string => `${proxyPrefix}${encodeURIComponent(targetUrl)}`;
+
+const readStoredMetadata = (): MetadataResponsePayload | null => {
+  if (typeof window === "undefined") {
+    return null;
   }
 
-  const requestPromise = retryWithBackoff<T>(
-    async ({ attempt, signal }) => {
-      logger.info("Fetching IMF resource.", {
-        attempt,
-        cacheKey,
-        url,
-      });
+  try {
+    const rawValue = window.localStorage.getItem(METADATA_STORAGE_KEY);
+    if (!rawValue) {
+      return null;
+    }
 
-      await wait(IMF_REQUEST_DELAY_MS);
+    const parsed = JSON.parse(rawValue) as CachedPayload<MetadataResponsePayload>;
+    if (!parsed?.expiresAt || !parsed.payload || parsed.expiresAt <= Date.now()) {
+      window.localStorage.removeItem(METADATA_STORAGE_KEY);
+      return null;
+    }
 
-      let response: Response;
+    metadataMemoryCache = parsed;
+    return parsed.payload;
+  } catch {
+    window.localStorage.removeItem(METADATA_STORAGE_KEY);
+    return null;
+  }
+};
+
+const writeStoredMetadata = (payload: MetadataResponsePayload): void => {
+  if (typeof window === "undefined") {
+    return;
+  }
+
+  const cachedPayload: CachedPayload<MetadataResponsePayload> = {
+    expiresAt: Date.now() + METADATA_TTL_MS,
+    payload,
+  };
+
+  metadataMemoryCache = cachedPayload;
+  try {
+    window.localStorage.setItem(METADATA_STORAGE_KEY, JSON.stringify(cachedPayload));
+  } catch {
+    // Ignore storage quota or privacy-mode failures and keep the in-memory cache.
+  }
+};
+
+const getCachedDataPayload = (cacheKey: string): DataResponsePayload | null => {
+  const cached = dataCache.get(cacheKey);
+  if (!cached) {
+    return null;
+  }
+
+  if (cached.expiresAt <= Date.now()) {
+    dataCache.delete(cacheKey);
+    return null;
+  }
+
+  return cached.payload;
+};
+
+const fetchJsonFromProxy = async <T>(path: string, retries = 2): Promise<T> => {
+  const targetUrl = `${IMF_BASE_URL}${path.startsWith("/") ? path : `/${path}`}`;
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    for (const proxyPrefix of PROXY_PREFIXES) {
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
       try {
-        response = await fetch(url, {
-          method: "GET",
-          headers: IMF_REQUEST_HEADERS,
-          signal,
+        await wait(REQUEST_DELAY_MS);
+
+        const response = await fetch(createProxyUrl(proxyPrefix, targetUrl), {
+          headers: {
+            Accept: "application/json",
+          },
+          signal: controller.signal,
         });
-      } catch (error) {
-        if (isAbortError(error)) {
-          throw new RequestError("The IMF request timed out.", {
-            code: "IMF_TIMEOUT",
-            status: 504,
-            retryable: true,
-            cause: error,
-          });
+
+        if (!response.ok) {
+          throw new ImfClientError("Data temporarily unavailable.", response.status, "IMF_PROXY_UNAVAILABLE");
         }
 
-        throw new RequestError("Unable to reach the IMF API.", {
-          code: "IMF_NETWORK_FAILURE",
-          status: 502,
-          retryable: true,
-          cause: error,
-        });
-      }
+        const responseText = await response.text();
+        if (!responseText.trim()) {
+          throw new ImfClientError("Data temporarily unavailable.", 503, "IMF_EMPTY_RESPONSE");
+        }
 
-      const responseText = await response.text();
-      const contentType = response.headers.get("content-type");
+        if (isHtmlPayload(responseText) || isBlockedPayload(responseText)) {
+          throw new ImfClientError("Data temporarily unavailable.", 503, "IMF_BLOCKED");
+        }
 
-      if (response.status === 403 || isAccessDeniedResponse(responseText) || isHtmlResponse(contentType, responseText)) {
-        throw new RequestError("IMF API temporarily blocked upstream request", {
-          code: "IMF_ACCESS_DENIED",
-          status: 503,
-          retryable: true,
-        });
-      }
+        let parsedResponse: unknown;
 
-      if (response.status >= 500) {
-        throw new RequestError("The IMF API is temporarily unavailable.", {
-          code: "IMF_UPSTREAM_5XX",
-          status: 502,
-          retryable: true,
-        });
-      }
+        try {
+          parsedResponse = JSON.parse(responseText);
+        } catch {
+          throw new ImfClientError("Data temporarily unavailable.", 503, "IMF_INVALID_JSON");
+        }
 
-      if (!response.ok) {
-        throw new RequestError("The IMF API request failed.", {
-          code: "IMF_INVALID_REQUEST",
-          status: 502,
-          retryable: false,
-          cause: responseText,
-        });
-      }
+        if (isProxyErrorPayload(parsedResponse)) {
+          throw new ImfClientError("Data temporarily unavailable.", 503, "IMF_PROXY_ERROR");
+        }
 
-      if (!responseText.trim()) {
-        throw new RequestError("The IMF API returned an empty response.", {
-          code: "IMF_EMPTY_RESPONSE",
-          status: 502,
-          retryable: true,
-        });
-      }
+        if (!isRecord(parsedResponse)) {
+          throw new ImfClientError("Data temporarily unavailable.", 503, "IMF_INVALID_PAYLOAD");
+        }
 
-      let parsedResponse: unknown;
-
-      try {
-        parsedResponse = JSON.parse(responseText);
+        return parsedResponse as T;
       } catch (error) {
-        throw new RequestError("The IMF API returned malformed JSON.", {
-          code: "IMF_MALFORMED_JSON",
-          status: 502,
-          retryable: true,
-          cause: error,
-        });
+        lastError = error;
+      } finally {
+        window.clearTimeout(timeout);
       }
+    }
 
-      if (!parsedResponse || typeof parsedResponse !== "object") {
-        throw new RequestError(invalidPayloadMessage, {
-          code: invalidPayloadCode,
-          status: 502,
-          retryable: true,
-        });
-      }
+    if (attempt < retries) {
+      await wait(RETRY_DELAYS_MS[Math.min(attempt, RETRY_DELAYS_MS.length - 1)] ?? 0);
+    }
+  }
 
-      return parsedResponse as T;
-    },
-    {
-      maxRetries: 2,
-      backoffMs: [200, 600],
-      timeoutMs: 10_000,
-      shouldRetry: isRetryableRequestError,
-    },
-  )
-    .then((data) => {
-      responseCache.set(cacheKey, {
-        data,
-        expiresAt: Date.now() + ttlMs,
-      });
+  if (lastError instanceof ImfClientError) {
+    throw lastError;
+  }
 
-      return data;
-    })
-    .catch((error) => {
-      logger.error("IMF request failed.", error, {
-        cacheKey,
-        url,
-      });
-      throw error;
-    })
-    .finally(() => {
-      inFlightRequests.delete(cacheKey);
-    });
+  if (lastError instanceof Error && lastError.name === "AbortError") {
+    throw new ImfClientError("Data temporarily unavailable.", 504, "IMF_TIMEOUT");
+  }
 
-  inFlightRequests.set(cacheKey, requestPromise);
-  return requestPromise;
-}
+  throw new ImfClientError("Data temporarily unavailable.", 503, "IMF_PROXY_FAILED");
+};
 
-export async function fetchImfCountries(): Promise<SelectOption[]> {
-  const response = await fetchImfJson<ImfCountriesResponse>({
-    cacheKey: "metadata:countries",
-    invalidPayloadCode: "IMF_INVALID_COUNTRY_PAYLOAD",
-    invalidPayloadMessage: "The IMF API returned malformed country metadata.",
-    ttlMs: METADATA_CACHE_TTL_MS,
-    url: `${IMF_BASE_URL}/countries`,
-  });
-
-  if (!response.countries || typeof response.countries !== "object") {
-    throw new RequestError("The IMF API returned malformed country metadata.", {
-      code: "IMF_INVALID_COUNTRY_PAYLOAD",
-      status: 502,
-      retryable: true,
-    });
+const normalizeCountries = (response: ImfCountriesResponse): SelectOption[] => {
+  if (!isRecord(response.countries)) {
+    throw new ImfClientError("Unable to load the IMF catalog right now.", 502, "INVALID_COUNTRY_METADATA");
   }
 
   return Object.entries(response.countries)
     .filter(([value, entry]) => Boolean(value.trim()) && typeof entry?.label === "string" && Boolean(entry.label.trim()))
     .map(([value, entry]) => ({
       label: sanitizeText(entry.label as string),
-      value: normalizeParam(value),
+      value: normalizeCode(value),
     }))
     .sort(compareOptions);
-}
+};
 
-export async function fetchImfIndicators(): Promise<IndicatorOption[]> {
-  const response = await fetchImfJson<ImfIndicatorsResponse>({
-    cacheKey: "metadata:indicators",
-    invalidPayloadCode: "IMF_INVALID_INDICATOR_PAYLOAD",
-    invalidPayloadMessage: "The IMF API returned malformed indicator metadata.",
-    ttlMs: METADATA_CACHE_TTL_MS,
-    url: `${IMF_BASE_URL}/indicators`,
-  });
-
-  if (!response.indicators || typeof response.indicators !== "object") {
-    throw new RequestError("The IMF API returned malformed indicator metadata.", {
-      code: "IMF_INVALID_INDICATOR_PAYLOAD",
-      status: 502,
-      retryable: true,
-    });
+const normalizeIndicators = (response: ImfIndicatorsResponse): IndicatorOption[] => {
+  if (!isRecord(response.indicators)) {
+    throw new ImfClientError("Unable to load the IMF catalog right now.", 502, "INVALID_INDICATOR_METADATA");
   }
 
   return Object.entries(response.indicators)
     .filter(([value, entry]) => Boolean(value.trim()) && typeof entry?.label === "string" && Boolean(entry.label.trim()))
     .map(([value, entry]) => ({
       label: sanitizeText(entry.label as string),
-      value: normalizeParam(value),
+      value: normalizeCode(value),
       description: typeof entry.description === "string" ? sanitizeText(entry.description) : undefined,
       source: typeof entry.source === "string" ? sanitizeText(entry.source) : undefined,
       unit: typeof entry.unit === "string" ? sanitizeText(entry.unit) : undefined,
       dataset: typeof entry.dataset === "string" ? sanitizeText(entry.dataset) : undefined,
     }))
     .sort(compareOptions);
-}
+};
 
-export async function fetchImfData(country: string, indicator: string): Promise<ImfDataMapperResponse> {
-  const normalizedCountry = normalizeParam(country);
-  const normalizedIndicator = normalizeParam(indicator);
-
-  const response = await fetchImfJson<ImfDataMapperResponse>({
-    cacheKey: `data:${normalizedCountry}:${normalizedIndicator}`,
-    invalidPayloadCode: "IMF_INVALID_DATA_PAYLOAD",
-    invalidPayloadMessage: "The IMF API returned malformed time-series data.",
-    ttlMs: DATA_CACHE_TTL_MS,
-    url: `${IMF_BASE_URL}/${encodeURIComponent(normalizedIndicator)}/${encodeURIComponent(normalizedCountry)}`,
-  });
-
-  const indicatorValues = response.values?.[normalizedIndicator];
+const normalizeSeriesData = (
+  response: ImfDataMapperResponse,
+  country: string,
+  indicator: string,
+): DataResponsePayload => {
+  const indicatorValues = response.values?.[indicator];
   if (!isRecord(indicatorValues)) {
-    throw new RequestError("No data available for the selected country and indicator.", {
-      code: "NO_DATA",
-      status: 404,
-      retryable: false,
-    });
+    throw new ImfClientError("No data available for this dataset.", 404, "NO_DATA");
   }
 
-  const countryValues = indicatorValues[normalizedCountry];
+  const countryValues = indicatorValues[country];
   if (!isRecord(countryValues)) {
-    throw new RequestError("No data available for the selected country and indicator.", {
-      code: "NO_DATA",
-      status: 404,
-      retryable: false,
-    });
+    throw new ImfClientError("No data available for this dataset.", 404, "NO_DATA");
+  }
+
+  const rows = Object.entries(countryValues)
+    .filter(([, rawValue]) => rawValue !== null && rawValue !== "")
+    .map(([year, rawValue]) => ({
+      year,
+      value: typeof rawValue === "number" ? rawValue : Number.parseFloat(String(rawValue)),
+    }))
+    .filter((row) => Number.isFinite(row.value))
+    .sort((left, right) => compareYears(left.year, right.year));
+
+  if (!rows.length) {
+    throw new ImfClientError("No data available for this dataset.", 404, "NO_DATA");
   }
 
   return {
-    api: response.api,
-    values: {
-      [normalizedIndicator]: {
-        [normalizedCountry]: countryValues as Record<string, number | string | null>,
-      },
-    },
+    country,
+    indicator,
+    rows,
+    lastUpdated: new Date().toISOString(),
   };
+};
+
+export async function fetchMetadata(): Promise<MetadataResponsePayload> {
+  if (metadataMemoryCache && metadataMemoryCache.expiresAt > Date.now()) {
+    return metadataMemoryCache.payload;
+  }
+
+  const storedMetadata = readStoredMetadata();
+  if (storedMetadata) {
+    return storedMetadata;
+  }
+
+  if (metadataRequestPromise) {
+    return metadataRequestPromise;
+  }
+
+  metadataRequestPromise = Promise.all([
+    fetchJsonFromProxy<ImfCountriesResponse>("/countries"),
+    fetchJsonFromProxy<ImfIndicatorsResponse>("/indicators"),
+  ])
+    .then(([countriesResponse, indicatorsResponse]) => {
+      const payload: MetadataResponsePayload = {
+        countries: normalizeCountries(countriesResponse),
+        indicators: normalizeIndicators(indicatorsResponse),
+        lastUpdated: new Date().toISOString(),
+      };
+
+      writeStoredMetadata(payload);
+      return payload;
+    })
+    .finally(() => {
+      metadataRequestPromise = null;
+    });
+
+  return metadataRequestPromise;
+}
+
+export async function fetchSeriesData(country: string, indicator: string): Promise<DataResponsePayload> {
+  const normalizedCountry = normalizeCode(country);
+  const normalizedIndicator = normalizeCode(indicator);
+  const cacheKey = `${normalizedCountry}:${normalizedIndicator}`;
+
+  const cached = getCachedDataPayload(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const existingRequest = inFlightDataRequests.get(cacheKey);
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const requestPromise = fetchJsonFromProxy<ImfDataMapperResponse>(`/${normalizedIndicator}/${normalizedCountry}`)
+    .then((response) => {
+      const payload = normalizeSeriesData(response, normalizedCountry, normalizedIndicator);
+      dataCache.set(cacheKey, {
+        expiresAt: Date.now() + DATA_TTL_MS,
+        payload,
+      });
+      return payload;
+    })
+    .finally(() => {
+      inFlightDataRequests.delete(cacheKey);
+    });
+
+  inFlightDataRequests.set(cacheKey, requestPromise);
+  return requestPromise;
 }
