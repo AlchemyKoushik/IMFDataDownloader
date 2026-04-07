@@ -1,11 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { parseImfData } from "@/lib/dataParser";
 import { generateExcelBuffer } from "@/lib/excelGenerator";
-import { fetchImfData } from "@/lib/imfClient";
-import { RequestError } from "@/lib/retryHandler";
-import { ApiErrorPayload } from "@/types/imf";
-import { logger } from "@/utils/logger";
+import { ApiErrorPayload, DownloadObservation } from "@/types/imf";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -14,11 +10,10 @@ export const maxDuration = 45;
 const createErrorResponse = (status: number, code: string, message: string, details?: string): NextResponse<ApiErrorPayload> =>
   NextResponse.json(
     {
-      error: {
-        code,
-        message,
-        ...(details ? { details } : {}),
-      },
+      error: true,
+      code,
+      message,
+      ...(details ? { details } : {}),
     },
     {
       status,
@@ -28,22 +23,43 @@ const createErrorResponse = (status: number, code: string, message: string, deta
     },
   );
 
-const normalizeQueryValue = (value: string | null): string => value?.trim().toUpperCase() ?? "";
+const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
 
-export async function GET(request: NextRequest): Promise<NextResponse> {
-  const country = normalizeQueryValue(request.nextUrl.searchParams.get("country"));
-  const indicator = normalizeQueryValue(request.nextUrl.searchParams.get("indicator"));
-
-  if (!country || !indicator) {
-    return createErrorResponse(400, "VALIDATION_ERROR", "Country and indicator are required.");
+const normalizeDownloadRows = (payload: unknown): DownloadObservation[] => {
+  if (!Array.isArray(payload)) {
+    throw new Error("Request body must be an array of data rows.");
   }
 
+  return payload.map((entry) => {
+    if (!isRecord(entry)) {
+      throw new Error("Each data row must be an object.");
+    }
+
+    const year = typeof entry.year === "number" ? String(entry.year) : typeof entry.year === "string" ? entry.year.trim() : "";
+    const country = typeof entry.country === "string" ? entry.country.trim().toUpperCase() : "";
+    const indicator = typeof entry.indicator === "string" ? entry.indicator.trim().toUpperCase() : "";
+    const rawValue = typeof entry.value === "number" ? entry.value : Number.parseFloat(String(entry.value ?? ""));
+
+    if (!year || !country || !indicator || !Number.isFinite(rawValue)) {
+      throw new Error("Each row must include valid year, value, country, and indicator fields.");
+    }
+
+    return {
+      year,
+      value: rawValue,
+      country,
+      indicator,
+    };
+  });
+};
+
+export async function POST(request: NextRequest): Promise<NextResponse> {
   try {
-    const rawResponse = await fetchImfData(country, indicator);
-    const rows = parseImfData(rawResponse);
+    const payload = (await request.json()) as unknown;
+    const rows = normalizeDownloadRows(payload);
 
     if (!rows.length) {
-      return createErrorResponse(404, "NO_DATA", "No data found for the selected country and indicator.");
+      return createErrorResponse(400, "EMPTY_DATASET", "At least one data row is required to generate the Excel file.");
     }
 
     const excelBuffer = generateExcelBuffer(rows);
@@ -58,19 +74,10 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       },
     });
   } catch (error) {
-    logger.error("Download route failed.", error, {
-      country,
-      indicator,
-    });
-
-    if (error instanceof RequestError) {
-      return createErrorResponse(error.status, error.code, error.message);
+    if (error instanceof Error) {
+      return createErrorResponse(400, "DOWNLOAD_GENERATION_FAILED", error.message);
     }
 
-    return createErrorResponse(
-      500,
-      "INTERNAL_SERVER_ERROR",
-      "Unable to generate the Excel file right now. Please try again shortly.",
-    );
+    return createErrorResponse(500, "INTERNAL_SERVER_ERROR", "Unable to generate the Excel file right now.");
   }
 }

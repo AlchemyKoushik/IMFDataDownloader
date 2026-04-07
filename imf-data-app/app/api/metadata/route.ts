@@ -9,13 +9,13 @@ export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 export const maxDuration = 45;
 
-const createErrorResponse = (status: number, code: string, message: string): NextResponse<ApiErrorPayload> =>
+const createErrorResponse = (status: number, code: string, message: string, details?: string): NextResponse<ApiErrorPayload> =>
   NextResponse.json(
     {
-      error: {
-        code,
-        message,
-      },
+      error: true,
+      code,
+      message,
+      ...(details ? { details } : {}),
     },
     {
       status,
@@ -38,7 +38,7 @@ export async function GET(): Promise<NextResponse<MetadataResponsePayload | ApiE
       {
         status: 200,
         headers: {
-          "Cache-Control": "public, s-maxage=3600, stale-while-revalidate=86400",
+          "Cache-Control": "public, s-maxage=86400, stale-while-revalidate=86400",
         },
       },
     );

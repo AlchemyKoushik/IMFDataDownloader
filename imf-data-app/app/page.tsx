@@ -1,31 +1,26 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useDeferredValue, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
-import { ApiErrorPayload, IndicatorOption, MetadataResponsePayload, SelectOption } from "@/types/imf";
+import {
+  ApiErrorPayload,
+  DataResponsePayload,
+  DownloadObservation,
+  IndicatorOption,
+  MetadataResponsePayload,
+  SelectOption,
+} from "@/types/imf";
 
 type NoticeTone = "idle" | "success" | "error" | "empty";
 
-class DownloadRequestError extends Error {
+class ApiRequestError extends Error {
   public readonly code: string;
   public readonly status: number;
 
   constructor(message: string, status: number, code: string) {
     super(message);
-    this.name = "DownloadRequestError";
-    this.status = status;
-    this.code = code;
-  }
-}
-
-class MetadataRequestError extends Error {
-  public readonly code: string;
-  public readonly status: number;
-
-  constructor(message: string, status: number, code: string) {
-    super(message);
-    this.name = "MetadataRequestError";
+    this.name = "ApiRequestError";
     this.status = status;
     this.code = code;
   }
@@ -46,71 +41,184 @@ interface SearchableSelectorProps<T extends SelectOption> {
   setQuery: (value: string) => void;
 }
 
+interface CachedMetadataPayload {
+  expiresAt: number;
+  payload: MetadataResponsePayload;
+}
+
+interface CachedDataPayload {
+  expiresAt: number;
+  payload: DataResponsePayload;
+}
+
 const FRONTEND_TIMEOUT_MS = 20_000;
+const METADATA_STORAGE_KEY = "imf-metadata-cache-v2";
+const METADATA_STORAGE_TTL_MS = 24 * 60 * 60 * 1000;
+const DATA_CACHE_TTL_MS = 60 * 60 * 1000;
 const MAX_VISIBLE_RESULTS = 120;
 const PAGE_STEP = 8;
+const SEARCH_DEBOUNCE_MS = 300;
 
-const fetchWithTimeout = async (url: string): Promise<Response> => {
+const clientDataCache = new Map<string, CachedDataPayload>();
+const inFlightDataRequests = new Map<string, Promise<DataResponsePayload>>();
+
+const useDebouncedValue = (value: string, delayMs: number): string => {
+  const [debouncedValue, setDebouncedValue] = useState(value);
+
+  useEffect(() => {
+    const timeout = window.setTimeout(() => {
+      setDebouncedValue(value);
+    }, delayMs);
+
+    return () => {
+      window.clearTimeout(timeout);
+    };
+  }, [delayMs, value]);
+
+  return debouncedValue;
+};
+
+const fetchWithTimeout = async (url: string, init?: RequestInit): Promise<Response> => {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), FRONTEND_TIMEOUT_MS);
+  const timeout = window.setTimeout(() => controller.abort(), FRONTEND_TIMEOUT_MS);
 
   try {
     return await fetch(url, {
-      method: "GET",
+      ...init,
       cache: "no-store",
       signal: controller.signal,
     });
   } finally {
-    clearTimeout(timeout);
+    window.clearTimeout(timeout);
   }
+};
+
+const readApiError = async (response: Response, fallbackMessage: string, fallbackCode: string): Promise<ApiRequestError> => {
+  let message = fallbackMessage;
+  let code = fallbackCode;
+
+  try {
+    const payload = (await response.json()) as ApiErrorPayload;
+    message = payload.message ?? message;
+    code = payload.code ?? code;
+  } catch {
+    // Ignore malformed error payloads and use the default message.
+  }
+
+  return new ApiRequestError(message, response.status, code);
+};
+
+const readCachedMetadata = (): MetadataResponsePayload | null => {
+  try {
+    const rawValue = window.localStorage.getItem(METADATA_STORAGE_KEY);
+    if (!rawValue) {
+      return null;
+    }
+
+    const parsed = JSON.parse(rawValue) as CachedMetadataPayload;
+    if (!parsed?.expiresAt || !parsed.payload || parsed.expiresAt <= Date.now()) {
+      window.localStorage.removeItem(METADATA_STORAGE_KEY);
+      return null;
+    }
+
+    return parsed.payload;
+  } catch {
+    window.localStorage.removeItem(METADATA_STORAGE_KEY);
+    return null;
+  }
+};
+
+const writeCachedMetadata = (payload: MetadataResponsePayload): void => {
+  const cachedPayload: CachedMetadataPayload = {
+    expiresAt: Date.now() + METADATA_STORAGE_TTL_MS,
+    payload,
+  };
+
+  window.localStorage.setItem(METADATA_STORAGE_KEY, JSON.stringify(cachedPayload));
 };
 
 const fetchMetadata = async (): Promise<MetadataResponsePayload> => {
   const response = await fetchWithTimeout("/api/metadata");
 
   if (!response.ok) {
-    let message = "Unable to load IMF metadata.";
-    let code = "METADATA_FAILED";
-
-    try {
-      const payload = (await response.json()) as ApiErrorPayload;
-      message = payload.error.message ?? message;
-      code = payload.error.code ?? code;
-    } catch {
-      // Ignore malformed error payloads and keep the default message.
-    }
-
-    throw new MetadataRequestError(message, response.status, code);
+    throw await readApiError(response, "Unable to load IMF metadata.", "METADATA_FAILED");
   }
 
   return (await response.json()) as MetadataResponsePayload;
 };
 
-const downloadWorkbook = async (country: string, indicator: string): Promise<void> => {
-  const response = await fetchWithTimeout(
-    `/api/download?country=${encodeURIComponent(country)}&indicator=${encodeURIComponent(indicator)}`,
-  );
+const getCachedDataResponse = (cacheKey: string): DataResponsePayload | null => {
+  const cached = clientDataCache.get(cacheKey);
+
+  if (!cached) {
+    return null;
+  }
+
+  if (cached.expiresAt <= Date.now()) {
+    clientDataCache.delete(cacheKey);
+    return null;
+  }
+
+  return cached.payload;
+};
+
+const fetchSeriesData = async (country: string, indicator: string): Promise<DataResponsePayload> => {
+  const cacheKey = `${country}:${indicator}`;
+  const cached = getCachedDataResponse(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
+  const existingRequest = inFlightDataRequests.get(cacheKey);
+  if (existingRequest) {
+    return existingRequest;
+  }
+
+  const requestPromise = fetchWithTimeout(
+    `/api/data?country=${encodeURIComponent(country)}&indicator=${encodeURIComponent(indicator)}`,
+  )
+    .then(async (response) => {
+      if (!response.ok) {
+        throw await readApiError(response, "Unable to fetch IMF data.", "DATA_FETCH_FAILED");
+      }
+
+      const payload = (await response.json()) as DataResponsePayload;
+      clientDataCache.set(cacheKey, {
+        expiresAt: Date.now() + DATA_CACHE_TTL_MS,
+        payload,
+      });
+      return payload;
+    })
+    .finally(() => {
+      inFlightDataRequests.delete(cacheKey);
+    });
+
+  inFlightDataRequests.set(cacheKey, requestPromise);
+  return requestPromise;
+};
+
+const requestWorkbook = async (rows: DownloadObservation[]): Promise<Blob> => {
+  const response = await fetchWithTimeout("/api/download", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(rows),
+  });
 
   if (!response.ok) {
-    let message = "Unable to download the Excel file.";
-    let code = "DOWNLOAD_FAILED";
-
-    try {
-      const payload = (await response.json()) as ApiErrorPayload;
-      message = payload.error.message ?? message;
-      code = payload.error.code ?? code;
-    } catch {
-      // Ignore malformed error payloads and fall back to the default message.
-    }
-
-    throw new DownloadRequestError(message, response.status, code);
+    throw await readApiError(response, "Unable to generate the Excel file.", "DOWNLOAD_FAILED");
   }
 
   const blob = await response.blob();
   if (blob.size === 0) {
-    throw new DownloadRequestError("The generated Excel file was empty.", 500, "EMPTY_FILE");
+    throw new ApiRequestError("The generated Excel file was empty.", 500, "EMPTY_FILE");
   }
 
+  return blob;
+};
+
+const triggerBlobDownload = (blob: Blob): void => {
   const objectUrl = window.URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = objectUrl;
@@ -175,9 +283,9 @@ function SearchableSelector<T extends SelectOption>({
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const optionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const shouldAutoScrollRef = useRef(false);
-  const deferredQuery = useDeferredValue(query);
+  const debouncedQuery = useDebouncedValue(query, SEARCH_DEBOUNCE_MS);
 
-  const filteredOptions = filterOptions(options, deferredQuery, selectedValue, extraText);
+  const filteredOptions = filterOptions(options, debouncedQuery, selectedValue, extraText);
   const selectedOption = options.find((option) => option.value === selectedValue) ?? null;
 
   useEffect(() => {
@@ -205,7 +313,7 @@ function SearchableSelector<T extends SelectOption>({
   useEffect(() => {
     const nextIndex = filteredOptions.findIndex((option) => option.value === selectedValue);
     setActiveIndex(nextIndex >= 0 ? nextIndex : 0);
-  }, [deferredQuery, filteredOptions, isOpen, selectedValue]);
+  }, [debouncedQuery, filteredOptions, isOpen, selectedValue]);
 
   useEffect(() => {
     const activeOption = optionRefs.current[activeIndex];
@@ -385,7 +493,7 @@ function SearchableSelector<T extends SelectOption>({
                       ref={(element) => {
                         optionRefs.current[index] = element;
                       }}
-                    className={`resultOption${isSelected ? " resultOption-selected" : ""}${
+                      className={`resultOption${isSelected ? " resultOption-selected" : ""}${
                         isActive ? " resultOption-active" : ""
                       }`}
                       role="option"
@@ -435,20 +543,37 @@ export default function HomePage() {
   const [indicatorQuery, setIndicatorQuery] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [noticeTone, setNoticeTone] = useState<NoticeTone>("idle");
-  const [noticeMessage, setNoticeMessage] = useState("Loading the full IMF catalog...");
+  const [noticeMessage, setNoticeMessage] = useState("Loading the IMF catalog...");
 
   useEffect(() => {
     let isMounted = true;
 
-    const loadMetadata = async (): Promise<void> => {
-      setIsMetadataLoading(true);
-      setMetadataError(null);
+    const hydrateMetadata = async (): Promise<void> => {
+      const cached = readCachedMetadata();
+      if (cached && isMounted) {
+        const nextCountry = defaultOptionValue(cached.countries, "USA");
+        const nextIndicator = defaultOptionValue(cached.indicators, "NGDP_RPCH");
+
+        setMetadata(cached);
+        setCountry(nextCountry);
+        setIndicator(nextIndicator);
+        setCountryQuery(cached.countries.find((option) => option.value === nextCountry)?.label ?? "");
+        setIndicatorQuery(cached.indicators.find((option) => option.value === nextIndicator)?.label ?? "");
+        setNoticeTone("idle");
+        setNoticeMessage(
+          `Loaded ${cached.countries.length} countries/regions and ${cached.indicators.length} indicators from cache.`,
+        );
+        setIsMetadataLoading(false);
+        return;
+      }
 
       try {
         const payload = await fetchMetadata();
         if (!isMounted) {
           return;
         }
+
+        writeCachedMetadata(payload);
 
         const nextCountry = defaultOptionValue(payload.countries, "USA");
         const nextIndicator = defaultOptionValue(payload.indicators, "NGDP_RPCH");
@@ -471,7 +596,7 @@ export default function HomePage() {
           setMetadataError("The IMF catalog request timed out. Please refresh and try again.");
           setNoticeTone("error");
           setNoticeMessage("The IMF catalog request timed out. Please refresh and try again.");
-        } else if (error instanceof MetadataRequestError) {
+        } else if (error instanceof ApiRequestError) {
           setMetadataError(error.message);
           setNoticeTone("error");
           setNoticeMessage(error.message);
@@ -487,7 +612,7 @@ export default function HomePage() {
       }
     };
 
-    void loadMetadata();
+    void hydrateMetadata();
 
     return () => {
       isMounted = false;
@@ -503,7 +628,7 @@ export default function HomePage() {
   const handleSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
 
-    if (!country || !indicator) {
+    if (!selectedCountry || !selectedIndicator) {
       setNoticeTone("error");
       setNoticeMessage("Please choose both a country/region and an indicator.");
       return;
@@ -511,32 +636,39 @@ export default function HomePage() {
 
     setIsLoading(true);
     setNoticeTone("idle");
-    setNoticeMessage("Preparing your Excel file...");
+    setNoticeMessage("Fetching IMF data...");
 
     try {
-      await downloadWorkbook(country, indicator);
+      const payload = await fetchSeriesData(selectedCountry.value, selectedIndicator.value);
+      const rows: DownloadObservation[] = payload.rows.map((row) => ({
+        ...row,
+        country: payload.country,
+        indicator: payload.indicator,
+      }));
+
+      setNoticeMessage("Generating Excel file...");
+
+      const workbook = await requestWorkbook(rows);
+      triggerBlobDownload(workbook);
+
       setNoticeTone("success");
-      setNoticeMessage("Excel download started successfully.");
+      setNoticeMessage(`Downloaded ${rows.length} IMF observations successfully.`);
     } catch (error) {
-      if (error instanceof DownloadRequestError) {
+      if (error instanceof ApiRequestError) {
         if (error.code === "NO_DATA") {
           setNoticeTone("empty");
-          setNoticeMessage("No data found for the selected country/region and indicator.");
+          setNoticeMessage("No data available for this dataset.");
         } else {
           setNoticeTone("error");
           setNoticeMessage(error.message);
         }
-        return;
-      }
-
-      if (error instanceof Error && error.name === "AbortError") {
+      } else if (error instanceof Error && error.name === "AbortError") {
         setNoticeTone("error");
         setNoticeMessage("The request took too long. Please try again in a moment.");
-        return;
+      } else {
+        setNoticeTone("error");
+        setNoticeMessage("Something went wrong while preparing the download.");
       }
-
-      setNoticeTone("error");
-      setNoticeMessage("Something went wrong while requesting the file. Please try again.");
     } finally {
       setIsLoading(false);
     }
@@ -549,8 +681,8 @@ export default function HomePage() {
           <span className="eyebrow">Production-ready IMF downloader</span>
           <h1>IMF World Economic Outlook Data.</h1>
           <p>
-            Use the indexed search panels to filter, scroll, and select countries or indicators from the live IMF
-            directory, then generate a clean Excel file through a resilient serverless workflow.
+            Search the cached IMF catalog, fetch time-series data through the proxy API layer, and generate a clean
+            Excel export through a Vercel-safe serverless workflow.
           </p>
 
           <div className="statsRow" aria-label="Catalog statistics">
@@ -578,7 +710,7 @@ export default function HomePage() {
           <SearchableSelector
             disabled={isMetadataLoading || isLoading}
             emptyMessage="No country or region matched that search."
-            helperText="Search by country name or ISO code. Scroll with mouse wheel or keyboard."
+            helperText="Search by country name or ISO code. Results are debounced and keyboard-friendly."
             id="country-search"
             label="Country / Region"
             options={countries}

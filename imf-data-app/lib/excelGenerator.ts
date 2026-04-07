@@ -1,25 +1,27 @@
 import * as XLSX from "xlsx";
 
-import { NormalizedObservation } from "@/types/imf";
+import { DownloadObservation } from "@/types/imf";
 
 const measureWidth = (values: Array<string | number>): number =>
   Math.max(...values.map((value) => String(value).length), 10) + 2;
 
-export function generateExcelBuffer(rows: NormalizedObservation[]): Buffer {
+export function generateExcelBuffer(rows: DownloadObservation[]): Buffer {
   if (!rows.length) {
     throw new Error("Cannot generate an Excel file without data rows.");
   }
 
-  const worksheetData: Array<[string, string | number]> = [["Year", "Value"]];
+  const worksheetData: Array<[string, string | number, string, string]> = [["Year", "Value", "Country", "Indicator"]];
 
   for (const row of rows) {
-    worksheetData.push([row.year, row.value]);
+    worksheetData.push([row.year, row.value, row.country, row.indicator]);
   }
 
   const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
   worksheet["!cols"] = [
     { wch: measureWidth(["Year", ...rows.map((row) => row.year)]) },
     { wch: measureWidth(["Value", ...rows.map((row) => row.value)]) },
+    { wch: measureWidth(["Country", ...rows.map((row) => row.country)]) },
+    { wch: measureWidth(["Indicator", ...rows.map((row) => row.indicator)]) },
   ];
 
   const workbook = XLSX.utils.book_new();
@@ -28,7 +30,7 @@ export function generateExcelBuffer(rows: NormalizedObservation[]): Buffer {
   const file = XLSX.write(workbook, {
     bookType: "xlsx",
     type: "buffer",
-    compression: true,
+    compression: false,
   });
 
   if (Buffer.isBuffer(file)) {
