@@ -1,45 +1,50 @@
 import * as XLSX from "xlsx";
 
-import { DownloadObservation } from "@/types/imf";
+import type { NormalizedObservation } from "@/types/imf";
 
 const measureWidth = (values: Array<string | number>): number =>
-  Math.max(...values.map((value) => String(value).length), 10) + 2;
+  Math.min(
+    Math.max(
+      ...values.map((value) => String(value).length),
+      12,
+    ) + 2,
+    42,
+  );
 
-export function generateExcelBuffer(rows: DownloadObservation[]): Buffer {
-  if (!rows.length) {
-    throw new Error("Cannot generate an Excel file without data rows.");
+const sanitizeFileSegment = (value: string): string =>
+  value
+    .replace(/[<>:"/\\|?*\u0000-\u001F]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/ /g, "_");
+
+export function generateExcel(data: NormalizedObservation[], country: string, indicator: string): void {
+  if (!data.length) {
+    throw new Error("No data available.");
   }
 
-  const worksheetData: Array<[string, string | number, string, string]> = [["Year", "Value", "Country", "Indicator"]];
-
-  for (const row of rows) {
-    worksheetData.push([row.year, row.value, row.country, row.indicator]);
-  }
-
-  const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
-  worksheet["!cols"] = [
-    { wch: measureWidth(["Year", ...rows.map((row) => row.year)]) },
-    { wch: measureWidth(["Value", ...rows.map((row) => row.value)]) },
-    { wch: measureWidth(["Country", ...rows.map((row) => row.country)]) },
-    { wch: measureWidth(["Indicator", ...rows.map((row) => row.indicator)]) },
+  const worksheetData = [
+    ["Country", country],
+    ["Indicator", indicator],
+    [],
+    ["Year", "Value"],
+    ...data.map((entry) => [entry.year, entry.value]),
   ];
 
+  const worksheet = XLSX.utils.aoa_to_sheet(worksheetData);
   const workbook = XLSX.utils.book_new();
+
+  worksheet["!cols"] = [
+    { wch: measureWidth(["Year", ...data.map((entry) => entry.year)]) },
+    { wch: measureWidth(["Value", ...data.map((entry) => entry.value)]) },
+  ];
+  worksheet["!autofilter"] = {
+    ref: `A4:B${data.length + 4}`,
+  };
+
   XLSX.utils.book_append_sheet(workbook, worksheet, "IMF Data");
 
-  const file = XLSX.write(workbook, {
-    bookType: "xlsx",
-    type: "buffer",
-    compression: false,
-  });
+  const fileName = `${sanitizeFileSegment(country)}_${sanitizeFileSegment(indicator)}_${new Date().getFullYear()}.xlsx`;
 
-  if (Buffer.isBuffer(file)) {
-    return file;
-  }
-
-  if (file instanceof Uint8Array) {
-    return Buffer.from(file);
-  }
-
-  return Buffer.from(file as ArrayBuffer);
+  XLSX.writeFile(workbook, fileName);
 }

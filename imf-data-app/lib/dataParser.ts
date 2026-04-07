@@ -1,22 +1,13 @@
 import { ImfDataMapperResponse, NormalizedObservation } from "@/types/imf";
 
-const comparePeriod = (left: string, right: string): number => {
-  const leftNumeric = Number(left);
-  const rightNumeric = Number(right);
-
-  if (Number.isFinite(leftNumeric) && Number.isFinite(rightNumeric)) {
-    return leftNumeric - rightNumeric;
-  }
-
-  return left.localeCompare(right);
-};
+const comparePeriod = (left: number, right: number): number => left - right;
 
 export function parseImfData(response: ImfDataMapperResponse): NormalizedObservation[] {
   if (!response.values || typeof response.values !== "object") {
     return [];
   }
 
-  const normalizedRows = new Map<string, number>();
+  const normalizedRows = new Map<number, number>();
 
   for (const indicatorValues of Object.values(response.values)) {
     if (!indicatorValues || typeof indicatorValues !== "object") {
@@ -33,12 +24,13 @@ export function parseImfData(response: ImfDataMapperResponse): NormalizedObserva
           continue;
         }
 
+        const year = Number.parseInt(period, 10);
         const value = typeof rawValue === "number" ? rawValue : Number.parseFloat(rawValue);
-        if (!Number.isFinite(value)) {
+        if (!Number.isFinite(year) || !Number.isFinite(value)) {
           continue;
         }
 
-        normalizedRows.set(period, value);
+        normalizedRows.set(year, value);
       }
     }
   }

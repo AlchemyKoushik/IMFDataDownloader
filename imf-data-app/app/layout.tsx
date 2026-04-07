@@ -2,6 +2,8 @@ import type { ReactNode } from "react";
 import type { Metadata } from "next";
 import { IBM_Plex_Sans, Space_Grotesk } from "next/font/google";
 
+import { AppReadyProvider } from "@/components/AppReadyProvider";
+
 import "./globals.css";
 
 const headingFont = Space_Grotesk({
@@ -28,7 +30,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body suppressHydrationWarning className={`${headingFont.variable} ${bodyFont.variable}`}>
-        {children}
+        <AppReadyProvider>{children}</AppReadyProvider>
       </body>
     </html>
   );

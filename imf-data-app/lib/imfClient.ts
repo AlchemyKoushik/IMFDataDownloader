@@ -38,6 +38,8 @@ const dataCache = new Map<string, CachedPayload<DataResponsePayload>>();
 const inFlightDataRequests = new Map<string, Promise<DataResponsePayload>>();
 let metadataMemoryCache: CachedPayload<MetadataResponsePayload> | null = null;
 let metadataRequestPromise: Promise<MetadataResponsePayload> | null = null;
+let countriesRequestPromise: Promise<SelectOption[]> | null = null;
+let indicatorsRequestPromise: Promise<IndicatorOption[]> | null = null;
 
 const wait = async (durationMs: number): Promise<void> =>
   new Promise((resolve) => {
@@ -62,17 +64,6 @@ const compareOptions = (left: SelectOption, right: SelectOption): number => {
   }
 
   return left.value.localeCompare(right.value, undefined, { sensitivity: "base" });
-};
-
-const compareYears = (left: string, right: string): number => {
-  const leftNumeric = Number(left);
-  const rightNumeric = Number(right);
-
-  if (Number.isFinite(leftNumeric) && Number.isFinite(rightNumeric)) {
-    return leftNumeric - rightNumeric;
-  }
-
-  return left.localeCompare(right, undefined, { sensitivity: "base" });
 };
 
 const isHtmlPayload = (value: string): boolean => {
@@ -137,6 +128,18 @@ const writeStoredMetadata = (payload: MetadataResponsePayload): void => {
   } catch {
     // Ignore storage quota or privacy-mode failures and keep the in-memory cache.
   }
+};
+
+export const primeMetadataCache = (payload: MetadataResponsePayload): void => {
+  writeStoredMetadata(payload);
+};
+
+const getCachedMetadata = (): MetadataResponsePayload | null => {
+  if (metadataMemoryCache && metadataMemoryCache.expiresAt > Date.now()) {
+    return metadataMemoryCache.payload;
+  }
+
+  return readStoredMetadata();
 };
 
 const getCachedDataPayload = (cacheKey: string): DataResponsePayload | null => {
@@ -275,11 +278,11 @@ const normalizeSeriesData = (
   const rows = Object.entries(countryValues)
     .filter(([, rawValue]) => rawValue !== null && rawValue !== "")
     .map(([year, rawValue]) => ({
-      year,
+      year: Number.parseInt(year, 10),
       value: typeof rawValue === "number" ? rawValue : Number.parseFloat(String(rawValue)),
     }))
-    .filter((row) => Number.isFinite(row.value))
-    .sort((left, right) => compareYears(left.year, right.year));
+    .filter((row) => Number.isFinite(row.year) && Number.isFinite(row.value))
+    .sort((left, right) => left.year - right.year);
 
   if (!rows.length) {
     throw new ImfClientError("No data available for this dataset.", 404, "NO_DATA");
@@ -293,28 +296,59 @@ const normalizeSeriesData = (
   };
 };
 
-export async function fetchMetadata(): Promise<MetadataResponsePayload> {
-  if (metadataMemoryCache && metadataMemoryCache.expiresAt > Date.now()) {
-    return metadataMemoryCache.payload;
+export async function fetchCountries(): Promise<SelectOption[]> {
+  const cachedMetadata = getCachedMetadata();
+  if (cachedMetadata) {
+    return cachedMetadata.countries;
   }
 
-  const storedMetadata = readStoredMetadata();
-  if (storedMetadata) {
-    return storedMetadata;
+  if (countriesRequestPromise) {
+    return countriesRequestPromise;
+  }
+
+  countriesRequestPromise = fetchJsonFromProxy<ImfCountriesResponse>("/countries")
+    .then((response) => normalizeCountries(response))
+    .finally(() => {
+      countriesRequestPromise = null;
+    });
+
+  return countriesRequestPromise;
+}
+
+export async function fetchIndicators(): Promise<IndicatorOption[]> {
+  const cachedMetadata = getCachedMetadata();
+  if (cachedMetadata) {
+    return cachedMetadata.indicators;
+  }
+
+  if (indicatorsRequestPromise) {
+    return indicatorsRequestPromise;
+  }
+
+  indicatorsRequestPromise = fetchJsonFromProxy<ImfIndicatorsResponse>("/indicators")
+    .then((response) => normalizeIndicators(response))
+    .finally(() => {
+      indicatorsRequestPromise = null;
+    });
+
+  return indicatorsRequestPromise;
+}
+
+export async function fetchMetadata(): Promise<MetadataResponsePayload> {
+  const cachedMetadata = getCachedMetadata();
+  if (cachedMetadata) {
+    return cachedMetadata;
   }
 
   if (metadataRequestPromise) {
     return metadataRequestPromise;
   }
 
-  metadataRequestPromise = Promise.all([
-    fetchJsonFromProxy<ImfCountriesResponse>("/countries"),
-    fetchJsonFromProxy<ImfIndicatorsResponse>("/indicators"),
-  ])
-    .then(([countriesResponse, indicatorsResponse]) => {
+  metadataRequestPromise = Promise.all([fetchCountries(), fetchIndicators()])
+    .then(([countries, indicators]) => {
       const payload: MetadataResponsePayload = {
-        countries: normalizeCountries(countriesResponse),
-        indicators: normalizeIndicators(indicatorsResponse),
+        countries,
+        indicators,
         lastUpdated: new Date().toISOString(),
       };
 

@@ -3,22 +3,12 @@
 import type { FormEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 
-import { fetchMetadata, fetchSeriesData, ImfClientError } from "@/lib/imfClient";
-import { ApiErrorPayload, DownloadObservation, IndicatorOption, MetadataResponsePayload, SelectOption } from "@/types/imf";
+import { useAppReady } from "@/components/AppReadyProvider";
+import { generateExcel } from "@/lib/excelGenerator";
+import { fetchSeriesData, ImfClientError } from "@/lib/imfClient";
+import { IndicatorOption, SelectOption } from "@/types/imf";
 
 type NoticeTone = "idle" | "success" | "error" | "empty";
-
-class ApiRequestError extends Error {
-  public readonly code: string;
-  public readonly status: number;
-
-  constructor(message: string, status: number, code: string) {
-    super(message);
-    this.name = "ApiRequestError";
-    this.status = status;
-    this.code = code;
-  }
-}
 
 interface SearchableSelectorProps<T extends SelectOption> {
   disabled?: boolean;
@@ -35,7 +25,6 @@ interface SearchableSelectorProps<T extends SelectOption> {
   setQuery: (value: string) => void;
 }
 
-const FRONTEND_TIMEOUT_MS = 20_000;
 const MAX_VISIBLE_RESULTS = 120;
 const PAGE_STEP = 8;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -54,67 +43,6 @@ const useDebouncedValue = (value: string, delayMs: number): string => {
   }, [delayMs, value]);
 
   return debouncedValue;
-};
-
-const fetchWithTimeout = async (url: string, init?: RequestInit): Promise<Response> => {
-  const controller = new AbortController();
-  const timeout = window.setTimeout(() => controller.abort(), FRONTEND_TIMEOUT_MS);
-
-  try {
-    return await fetch(url, {
-      ...init,
-      signal: controller.signal,
-    });
-  } finally {
-    window.clearTimeout(timeout);
-  }
-};
-
-const readApiError = async (response: Response, fallbackMessage: string, fallbackCode: string): Promise<ApiRequestError> => {
-  let message = fallbackMessage;
-  let code = fallbackCode;
-
-  try {
-    const payload = (await response.json()) as ApiErrorPayload;
-    message = payload.message ?? message;
-    code = payload.code ?? code;
-  } catch {
-    // Ignore malformed error payloads and keep the fallback message.
-  }
-
-  return new ApiRequestError(message, response.status, code);
-};
-
-const requestWorkbook = async (rows: DownloadObservation[]): Promise<Blob> => {
-  const response = await fetchWithTimeout("/api/download", {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(rows),
-  });
-
-  if (!response.ok) {
-    throw await readApiError(response, "Unable to generate the Excel file.", "DOWNLOAD_FAILED");
-  }
-
-  const blob = await response.blob();
-  if (blob.size === 0) {
-    throw new ApiRequestError("The generated Excel file was empty.", 500, "EMPTY_FILE");
-  }
-
-  return blob;
-};
-
-const triggerBlobDownload = (blob: Blob): void => {
-  const objectUrl = window.URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = objectUrl;
-  link.download = "IMF_Data.xlsx";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  window.URL.revokeObjectURL(objectUrl);
 };
 
 const defaultOptionValue = (options: SelectOption[], preferredValue: string): string =>
@@ -422,69 +350,62 @@ function SearchableSelector<T extends SelectOption>({
 }
 
 export default function HomePage() {
-  const [metadata, setMetadata] = useState<MetadataResponsePayload | null>(null);
-  const [metadataError, setMetadataError] = useState<string | null>(null);
-  const [isMetadataLoading, setIsMetadataLoading] = useState(true);
+  const { metadata } = useAppReady();
   const [country, setCountry] = useState("");
   const [indicator, setIndicator] = useState("");
   const [countryQuery, setCountryQuery] = useState("");
   const [indicatorQuery, setIndicatorQuery] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [noticeTone, setNoticeTone] = useState<NoticeTone>("idle");
-  const [noticeMessage, setNoticeMessage] = useState("Loading the IMF catalog...");
-
-  useEffect(() => {
-    let isMounted = true;
-
-    const hydrateMetadata = async (): Promise<void> => {
-      try {
-        const payload = await fetchMetadata();
-        if (!isMounted) {
-          return;
-        }
-
-        const nextCountry = defaultOptionValue(payload.countries, "USA");
-        const nextIndicator = defaultOptionValue(payload.indicators, "NGDP_RPCH");
-
-        setMetadata(payload);
-        setCountry(nextCountry);
-        setIndicator(nextIndicator);
-        setCountryQuery(payload.countries.find((option) => option.value === nextCountry)?.label ?? "");
-        setIndicatorQuery(payload.indicators.find((option) => option.value === nextIndicator)?.label ?? "");
-        setNoticeTone("idle");
-        setNoticeMessage(
-          `Loaded ${payload.countries.length} countries/regions and ${payload.indicators.length} indicators from the IMF catalog.`,
-        );
-      } catch (error) {
-        if (!isMounted) {
-          return;
-        }
-
-        if (error instanceof ImfClientError) {
-          setMetadataError(error.message);
-          setNoticeTone("error");
-          setNoticeMessage(error.message);
-        } else {
-          setMetadataError("Unable to load the IMF catalog right now.");
-          setNoticeTone("error");
-          setNoticeMessage("Unable to load the IMF catalog right now.");
-        }
-      } finally {
-        if (isMounted) {
-          setIsMetadataLoading(false);
-        }
-      }
-    };
-
-    void hydrateMetadata();
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
+  const [noticeMessage, setNoticeMessage] = useState("Metadata ready. Choose a country, then generate an Excel export.");
 
   const countries = metadata?.countries ?? [];
   const indicators = metadata?.indicators ?? [];
+
+  useEffect(() => {
+    if (!countries.length) {
+      return;
+    }
+
+    const nextCountry = countries.some((option) => option.value === country) ? country : defaultOptionValue(countries, "USA");
+    const nextCountryLabel = countries.find((option) => option.value === nextCountry)?.label ?? "";
+
+    if (nextCountry !== country) {
+      setCountry(nextCountry);
+    }
+
+    if (nextCountryLabel && countryQuery !== nextCountryLabel) {
+      setCountryQuery(nextCountryLabel);
+    }
+  }, [countries, country, countryQuery]);
+
+  useEffect(() => {
+    if (!indicators.length) {
+      return;
+    }
+
+    const nextIndicator = indicators.some((option) => option.value === indicator)
+      ? indicator
+      : defaultOptionValue(indicators, "NGDP_RPCH");
+    const nextIndicatorLabel = indicators.find((option) => option.value === nextIndicator)?.label ?? "";
+
+    if (nextIndicator !== indicator) {
+      setIndicator(nextIndicator);
+    }
+
+    if (nextIndicatorLabel && indicatorQuery !== nextIndicatorLabel) {
+      setIndicatorQuery(nextIndicatorLabel);
+    }
+  }, [indicator, indicatorQuery, indicators]);
+
+  useEffect(() => {
+    if (!metadata) {
+      return;
+    }
+
+    setNoticeTone("idle");
+    setNoticeMessage(`Metadata ready: ${metadata.countries.length} countries/regions and ${metadata.indicators.length} indicators loaded.`);
+  }, [metadata]);
 
   const selectedCountry = countries.find((option) => option.value === country) ?? null;
   const selectedIndicator = indicators.find((option) => option.value === indicator) ?? null;
@@ -504,19 +425,27 @@ export default function HomePage() {
 
     try {
       const payload = await fetchSeriesData(selectedCountry.value, selectedIndicator.value);
-      const rows: DownloadObservation[] = payload.rows.map((row) => ({
-        ...row,
-        country: payload.country,
-        indicator: payload.indicator,
-      }));
+      if (!payload.rows.length) {
+        setNoticeTone("empty");
+        setNoticeMessage("No data available for this dataset.");
+        return;
+      }
 
-      setNoticeMessage("Generating Excel file...");
+      setNoticeMessage("Generating Excel...");
 
-      const workbook = await requestWorkbook(rows);
-      triggerBlobDownload(workbook);
+      await new Promise<void>((resolve, reject) => {
+        window.setTimeout(() => {
+          try {
+            generateExcel(payload.rows, selectedCountry.label, selectedIndicator.label);
+            resolve();
+          } catch (error) {
+            reject(error);
+          }
+        }, 0);
+      });
 
       setNoticeTone("success");
-      setNoticeMessage(`Downloaded ${rows.length} IMF observations successfully.`);
+      setNoticeMessage(`Downloaded ${payload.rows.length} IMF observations successfully.`);
     } catch (error) {
       if (error instanceof ImfClientError) {
         if (error.code === "NO_DATA") {
@@ -526,15 +455,9 @@ export default function HomePage() {
           setNoticeTone("error");
           setNoticeMessage(error.message);
         }
-      } else if (error instanceof ApiRequestError) {
-        setNoticeTone("error");
-        setNoticeMessage(error.message);
-      } else if (error instanceof Error && error.name === "AbortError") {
-        setNoticeTone("error");
-        setNoticeMessage("The request took too long. Please try again in a moment.");
       } else {
         setNoticeTone("error");
-        setNoticeMessage("Something went wrong while preparing the download.");
+        setNoticeMessage("Failed to generate Excel file.");
       }
     } finally {
       setIsLoading(false);
@@ -548,8 +471,8 @@ export default function HomePage() {
           <span className="eyebrow">Production-ready IMF downloader</span>
           <h1>IMF World Economic Outlook Data.</h1>
           <p>
-            Search the cached IMF catalog, fetch time-series data through resilient public proxy connectors, and
-            generate a clean Excel export through a Vercel-safe serverless workflow.
+            Search the live IMF catalog, fetch time-series data through resilient public proxy connectors, and
+            generate a clean Excel export directly in the browser.
           </p>
 
           <div className="statsRow" aria-label="Catalog statistics">
@@ -567,15 +490,11 @@ export default function HomePage() {
         <form className="downloadCard" onSubmit={handleSubmit}>
           <div className="catalogNote">
             <strong>Live IMF catalog</strong>
-            <span>
-              {isMetadataLoading
-                ? "Loading official metadata..."
-                : "Type to search, use arrow keys to move, and press Enter to select."}
-            </span>
+            <span>Type to search, use arrow keys to move, and press Enter to select.</span>
           </div>
 
           <SearchableSelector
-            disabled={isMetadataLoading || isLoading}
+            disabled={isLoading}
             emptyMessage="No country or region matched that search."
             helperText="Search by country name or ISO code. Results are debounced and keyboard-friendly."
             id="country-search"
@@ -589,7 +508,7 @@ export default function HomePage() {
           />
 
           <SearchableSelector
-            disabled={isMetadataLoading || isLoading}
+            disabled={isLoading}
             emptyMessage="No indicator matched that search."
             extraText={(option: IndicatorOption) =>
               [option.unit, option.dataset, option.source].filter(Boolean).join(" | ")
@@ -627,12 +546,12 @@ export default function HomePage() {
           <button
             className="downloadButton"
             type="submit"
-            disabled={isLoading || isMetadataLoading || Boolean(metadataError) || !country || !indicator}
+            disabled={isLoading || !country || !indicator}
           >
             {isLoading ? (
               <>
                 <span className="spinner" aria-hidden="true" />
-                Preparing Excel...
+                Generating Excel...
               </>
             ) : (
               "Download Excel"

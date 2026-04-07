@@ -39,7 +39,7 @@ export interface IndicatorOption extends SelectOption {
 }
 
 export interface NormalizedObservation {
-  year: string;
+  year: number;
   value: number;
 }
 

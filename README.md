@@ -15,11 +15,12 @@ This is the current implemented version of the project:
 - Live searchable indicator dropdown
 - Indexed result lists with keyboard navigation
 - Mouse-wheel scrolling and click selection
-- Excel export through a Next.js route handler
+- Full client-side Excel export with `xlsx`
+- Smart startup loading screen with retry and transition states
 - Retry logic with exponential backoff
 - Timeout handling for IMF requests
 - Structured backend and frontend error handling
-- Vercel-friendly serverless architecture
+- Frontend-first architecture for metadata, data fetches, and workbook generation
 
 ## Current UI Behavior
 
@@ -50,13 +51,16 @@ Both search boxes currently work like this:
 `- imf-data-app/
    |- app/
    |  |- api/
-   |  |  |- download/
+   |  |  |- data/
    |  |  |  `- route.ts
    |  |  `- metadata/
    |  |     `- route.ts
    |  |- globals.css
    |  |- layout.tsx
    |  `- page.tsx
+   |- components/
+   |  |- AppReadyProvider.tsx
+   |  `- LoadingScreen.tsx
    |- lib/
    |  |- dataParser.ts
    |  |- excelGenerator.ts
@@ -75,69 +79,22 @@ Both search boxes currently work like this:
 
 ## API Endpoints
 
-### `GET /api/metadata`
+`/api/metadata` and `/api/data` are legacy compatibility routes that return a client-side-only notice. The active app flow fetches metadata and IMF series data directly in the browser through public proxy connectors.
 
-Returns the live IMF metadata catalog used by the frontend.
-
-Example response shape:
-
-```json
-{
-  "countries": [
-    { "label": "India", "value": "IND" }
-  ],
-  "indicators": [
-    {
-      "label": "GDP per capita, current prices",
-      "value": "NGDPDPC",
-      "unit": "U.S. dollars per capita",
-      "dataset": "WEO"
-    }
-  ],
-  "lastUpdated": "2026-04-07T12:00:00.000Z"
-}
-```
-
-### `GET /api/download`
-
-Downloads IMF data as an Excel file.
-
-Query params:
-
-- `country`
-- `indicator`
-
-Example:
-
-```text
-/api/download?country=IND&indicator=NGDPDPC
-```
-
-Success behavior:
-
-- Returns `IMF_Data.xlsx`
-- Sets `Content-Disposition: attachment; filename="IMF_Data.xlsx"`
-
-Example error shape:
-
-```json
-{
-  "error": {
-    "code": "NO_DATA",
-    "message": "No data found for the selected country/region and indicator."
-  }
-}
-```
+There is no `/api/download` endpoint in the current flow. Excel files are generated directly in the browser after IMF data is fetched client-side.
 
 ## Resilience Features
 
 - 3 retry attempts
 - 10 second timeout per IMF request
 - Exponential backoff: `500ms -> 1000ms -> 2000ms`
+- Full-screen metadata bootstrap before the app UI appears
+- Automatic reload retry with session-based loop protection
+- Manual retry after automatic attempts are exhausted
 - Graceful handling for malformed JSON
 - Safe handling when no data exists
-- Structured JSON errors from the backend
-- In-memory Excel generation using buffers only
+- Smooth loader fade-out once metadata validation succeeds
+- Browser-side workbook generation using `xlsx.writeFile`
 - Metadata caching and in-flight request reuse
 
 ## IMF Data Source
@@ -219,6 +176,7 @@ npx vercel
 ## Notes
 
 - Metadata and data requests are fetched from official IMF public endpoints.
+- Excel generation and download happen entirely on the frontend.
 - Invalid or blank IMF metadata entries are filtered out before they reach the UI.
 - Some country and indicator combinations may still return no data from IMF, which is handled as a clean app response rather than a crash.
 - `xlsx` currently reports an upstream `npm audit` advisory with no published fix available at install time.
