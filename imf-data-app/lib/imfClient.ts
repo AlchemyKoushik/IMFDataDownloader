@@ -7,6 +7,11 @@ import {
   MetadataResponsePayload,
   SelectOption,
 } from "@/types/imf";
+import {
+  getDatasetCountryMessage,
+  isIndicatorAvailableForCountry,
+  resolveWEOFallbackIndicator,
+} from "@/lib/datasetValidation";
 
 const IMF_BASE_URL = "https://www.imf.org/external/datamapper/api/v1";
 const PROXY_PREFIXES = ["https://api.allorigins.win/raw?url=", "https://corsproxy.io/?"];
@@ -32,6 +37,13 @@ export class ImfClientError extends Error {
     this.code = code;
     this.status = status;
   }
+}
+
+export interface SafeSeriesDataResult {
+  message?: string;
+  payload: DataResponsePayload;
+  resolvedIndicator: IndicatorOption;
+  usedFallback: boolean;
 }
 
 const dataCache = new Map<string, CachedPayload<DataResponsePayload>>();
@@ -176,16 +188,16 @@ const fetchJsonFromProxy = async <T>(path: string, retries = 2): Promise<T> => {
         });
 
         if (!response.ok) {
-          throw new ImfClientError("Data temporarily unavailable.", response.status, "IMF_PROXY_UNAVAILABLE");
+          throw new ImfClientError("Unable to reach IMF data services right now.", response.status, "IMF_PROXY_UNAVAILABLE");
         }
 
         const responseText = await response.text();
         if (!responseText.trim()) {
-          throw new ImfClientError("Data temporarily unavailable.", 503, "IMF_EMPTY_RESPONSE");
+          throw new ImfClientError("Unable to reach IMF data services right now.", 503, "IMF_EMPTY_RESPONSE");
         }
 
         if (isHtmlPayload(responseText) || isBlockedPayload(responseText)) {
-          throw new ImfClientError("Data temporarily unavailable.", 503, "IMF_BLOCKED");
+          throw new ImfClientError("Unable to reach IMF data services right now.", 503, "IMF_BLOCKED");
         }
 
         let parsedResponse: unknown;
@@ -193,15 +205,15 @@ const fetchJsonFromProxy = async <T>(path: string, retries = 2): Promise<T> => {
         try {
           parsedResponse = JSON.parse(responseText);
         } catch {
-          throw new ImfClientError("Data temporarily unavailable.", 503, "IMF_INVALID_JSON");
+          throw new ImfClientError("Unable to reach IMF data services right now.", 503, "IMF_INVALID_JSON");
         }
 
         if (isProxyErrorPayload(parsedResponse)) {
-          throw new ImfClientError("Data temporarily unavailable.", 503, "IMF_PROXY_ERROR");
+          throw new ImfClientError("Unable to reach IMF data services right now.", 503, "IMF_PROXY_ERROR");
         }
 
         if (!isRecord(parsedResponse)) {
-          throw new ImfClientError("Data temporarily unavailable.", 503, "IMF_INVALID_PAYLOAD");
+          throw new ImfClientError("Unable to reach IMF data services right now.", 503, "IMF_INVALID_PAYLOAD");
         }
 
         return parsedResponse as T;
@@ -222,10 +234,10 @@ const fetchJsonFromProxy = async <T>(path: string, retries = 2): Promise<T> => {
   }
 
   if (lastError instanceof Error && lastError.name === "AbortError") {
-    throw new ImfClientError("Data temporarily unavailable.", 504, "IMF_TIMEOUT");
+    throw new ImfClientError("Unable to reach IMF data services right now.", 504, "IMF_TIMEOUT");
   }
 
-  throw new ImfClientError("Data temporarily unavailable.", 503, "IMF_PROXY_FAILED");
+  throw new ImfClientError("Unable to reach IMF data services right now.", 503, "IMF_PROXY_FAILED");
 };
 
 const normalizeCountries = (response: ImfCountriesResponse): SelectOption[] => {
@@ -392,4 +404,80 @@ export async function fetchSeriesData(country: string, indicator: string): Promi
 
   inFlightDataRequests.set(cacheKey, requestPromise);
   return requestPromise;
+}
+
+export async function fetchSafeSeriesData(
+  country: string,
+  indicator: IndicatorOption,
+  indicators: IndicatorOption[],
+): Promise<SafeSeriesDataResult> {
+  const normalizedCountry = normalizeCode(country);
+  const selectedIndicator = indicator;
+  const fallbackIndicator = resolveWEOFallbackIndicator(selectedIndicator, indicators);
+
+  if (!isIndicatorAvailableForCountry(normalizedCountry, selectedIndicator)) {
+    if (!fallbackIndicator) {
+      throw new ImfClientError(getDatasetCountryMessage(selectedIndicator.dataset), 400, "INVALID_DATASET_COUNTRY");
+    }
+
+    console.warn("Fallback to WEO");
+    console.log("Fetching:", normalizedCountry, fallbackIndicator.value, fallbackIndicator.dataset ?? "WEO");
+    const payload = await fetchSeriesData(normalizedCountry, fallbackIndicator.value);
+    console.log("Data received:", payload.rows);
+
+    return {
+      message: "No data available for selected dataset. Showing WEO fallback.",
+      payload,
+      resolvedIndicator: fallbackIndicator,
+      usedFallback: true,
+    };
+  }
+
+  console.log("Fetching:", normalizedCountry, selectedIndicator.value, selectedIndicator.dataset ?? "UNKNOWN");
+
+  try {
+    const payload = await fetchSeriesData(normalizedCountry, selectedIndicator.value);
+    console.log("Data received:", payload.rows);
+
+    return {
+      payload,
+      resolvedIndicator: selectedIndicator,
+      usedFallback: false,
+    };
+  } catch (error) {
+    const canFallback =
+      error instanceof ImfClientError &&
+      error.code === "NO_DATA" &&
+      fallbackIndicator !== null &&
+      normalizeCode(fallbackIndicator.value) !== normalizeCode(selectedIndicator.value);
+
+    if (!canFallback) {
+      throw error;
+    }
+
+    console.warn("Fallback to WEO");
+    console.log("Fetching:", normalizedCountry, fallbackIndicator.value, fallbackIndicator.dataset ?? "WEO");
+
+    try {
+      const payload = await fetchSeriesData(normalizedCountry, fallbackIndicator.value);
+      console.log("Data received:", payload.rows);
+
+      return {
+        message: "No data available for selected dataset. Showing WEO fallback.",
+        payload,
+        resolvedIndicator: fallbackIndicator,
+        usedFallback: true,
+      };
+    } catch (fallbackError) {
+      if (fallbackError instanceof ImfClientError && fallbackError.code === "NO_DATA") {
+        throw new ImfClientError(
+          "No data available for the selected indicator, and the WEO fallback also returned no data.",
+          404,
+          "NO_DATA_AFTER_FALLBACK",
+        );
+      }
+
+      throw fallbackError;
+    }
+  }
 }

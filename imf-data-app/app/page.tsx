@@ -4,8 +4,9 @@ import type { FormEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 
 import { useAppReady } from "@/components/AppReadyProvider";
+import { REGION_SPECIFIC_DATASET_HINT, isIndicatorAvailableForCountry } from "@/lib/datasetValidation";
 import { generateExcel } from "@/lib/excelGenerator";
-import { fetchSeriesData, ImfClientError } from "@/lib/imfClient";
+import { fetchSafeSeriesData, ImfClientError } from "@/lib/imfClient";
 import { IndicatorOption, SelectOption } from "@/types/imf";
 
 type NoticeTone = "idle" | "success" | "error" | "empty";
@@ -361,42 +362,55 @@ export default function HomePage() {
 
   const countries = metadata?.countries ?? [];
   const indicators = metadata?.indicators ?? [];
+  const countryCompatibleIndicators = indicators.filter((option) => isIndicatorAvailableForCountry(country, option));
 
   useEffect(() => {
     if (!countries.length) {
       return;
     }
 
-    const nextCountry = countries.some((option) => option.value === country) ? country : defaultOptionValue(countries, "USA");
-    const nextCountryLabel = countries.find((option) => option.value === nextCountry)?.label ?? "";
+    const selectedCountry = countries.find((option) => option.value === country) ?? null;
+    if (selectedCountry) {
+      setCountryQuery((current) => current || selectedCountry.label);
 
-    if (nextCountry !== country) {
-      setCountry(nextCountry);
-    }
-
-    if (nextCountryLabel && countryQuery !== nextCountryLabel) {
-      setCountryQuery(nextCountryLabel);
-    }
-  }, [countries, country, countryQuery]);
-
-  useEffect(() => {
-    if (!indicators.length) {
       return;
     }
 
-    const nextIndicator = indicators.some((option) => option.value === indicator)
-      ? indicator
-      : defaultOptionValue(indicators, "NGDP_RPCH");
-    const nextIndicatorLabel = indicators.find((option) => option.value === nextIndicator)?.label ?? "";
+    const nextCountry = defaultOptionValue(countries, "USA");
+    const nextCountryLabel = countries.find((option) => option.value === nextCountry)?.label ?? "";
 
-    if (nextIndicator !== indicator) {
-      setIndicator(nextIndicator);
+    setCountry(nextCountry);
+    if (nextCountryLabel) {
+      setCountryQuery(nextCountryLabel);
+    }
+  }, [countries, country]);
+
+  useEffect(() => {
+    if (!countryCompatibleIndicators.length) {
+      return;
     }
 
-    if (nextIndicatorLabel && indicatorQuery !== nextIndicatorLabel) {
+    const selectedIndicator = countryCompatibleIndicators.find((option) => option.value === indicator) ?? null;
+    if (selectedIndicator) {
+      setIndicatorQuery((current) => current || selectedIndicator.label);
+
+      return;
+    }
+
+    const previousIndicator = indicators.find((option) => option.value === indicator) ?? null;
+    const nextIndicator = defaultOptionValue(countryCompatibleIndicators, "NGDP_RPCH");
+    const nextIndicatorLabel = countryCompatibleIndicators.find((option) => option.value === nextIndicator)?.label ?? "";
+
+    setIndicator(nextIndicator);
+    if (nextIndicatorLabel) {
       setIndicatorQuery(nextIndicatorLabel);
     }
-  }, [indicator, indicatorQuery, indicators]);
+
+    if (previousIndicator) {
+      setNoticeTone("idle");
+      setNoticeMessage("Some datasets are region-specific. The indicator list was updated for the selected country.");
+    }
+  }, [countryCompatibleIndicators, indicator, indicators]);
 
   useEffect(() => {
     if (!metadata) {
@@ -408,12 +422,12 @@ export default function HomePage() {
   }, [metadata]);
 
   const selectedCountry = countries.find((option) => option.value === country) ?? null;
-  const selectedIndicator = indicators.find((option) => option.value === indicator) ?? null;
+  const selectedIndicator = countryCompatibleIndicators.find((option) => option.value === indicator) ?? null;
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>): Promise<void> => {
     event.preventDefault();
 
-    if (!selectedCountry || !selectedIndicator) {
+    if (!country || !indicator || !selectedCountry || !selectedIndicator) {
       setNoticeTone("error");
       setNoticeMessage("Please choose both a country/region and an indicator.");
       return;
@@ -424,19 +438,19 @@ export default function HomePage() {
     setNoticeMessage("Fetching IMF data...");
 
     try {
-      const payload = await fetchSeriesData(selectedCountry.value, selectedIndicator.value);
-      if (!payload.rows.length) {
+      const result = await fetchSafeSeriesData(selectedCountry.value, selectedIndicator, indicators);
+      if (!result.payload.rows.length) {
         setNoticeTone("empty");
-        setNoticeMessage("No data available for this dataset.");
+        setNoticeMessage("No data available for this selection.");
         return;
       }
 
-      setNoticeMessage("Generating Excel...");
+      setNoticeMessage(result.usedFallback ? "Generating Excel from WEO fallback..." : "Generating Excel...");
 
       await new Promise<void>((resolve, reject) => {
         window.setTimeout(() => {
           try {
-            generateExcel(payload.rows, selectedCountry.label, selectedIndicator.label);
+            generateExcel(result.payload.rows, selectedCountry.label, result.resolvedIndicator.label);
             resolve();
           } catch (error) {
             reject(error);
@@ -445,12 +459,19 @@ export default function HomePage() {
       });
 
       setNoticeTone("success");
-      setNoticeMessage(`Downloaded ${payload.rows.length} IMF observations successfully.`);
+      setNoticeMessage(
+        result.usedFallback
+          ? `Downloaded ${result.payload.rows.length} IMF observations successfully. No data was available for the selected dataset, so the WEO fallback was used.`
+          : `Downloaded ${result.payload.rows.length} IMF observations successfully.`,
+      );
     } catch (error) {
       if (error instanceof ImfClientError) {
-        if (error.code === "NO_DATA") {
+        if (error.code === "NO_DATA" || error.code === "NO_DATA_AFTER_FALLBACK") {
           setNoticeTone("empty");
-          setNoticeMessage("No data available for this dataset.");
+          setNoticeMessage(error.message);
+        } else if (error.code === "INVALID_DATASET_COUNTRY") {
+          setNoticeTone("error");
+          setNoticeMessage("This dataset is not available for the selected country, and no WEO fallback exists for this indicator.");
         } else {
           setNoticeTone("error");
           setNoticeMessage(error.message);
@@ -490,7 +511,9 @@ export default function HomePage() {
         <form className="downloadCard" onSubmit={handleSubmit}>
           <div className="catalogNote">
             <strong>Live IMF catalog</strong>
-            <span>Type to search, use arrow keys to move, and press Enter to select.</span>
+            <span>
+              Type to search, use arrow keys to move, and press Enter to select. {REGION_SPECIFIC_DATASET_HINT}
+            </span>
           </div>
 
           <SearchableSelector
@@ -509,14 +532,14 @@ export default function HomePage() {
 
           <SearchableSelector
             disabled={isLoading}
-            emptyMessage="No indicator matched that search."
+            emptyMessage="No compatible indicator matched that search."
             extraText={(option: IndicatorOption) =>
               [option.unit, option.dataset, option.source].filter(Boolean).join(" | ")
             }
-            helperText="Search by name, code, unit, dataset, or source. Scroll and press Enter to pick."
+            helperText="Search by name, code, unit, dataset, or source. Region-specific datasets are filtered by country."
             id="indicator-search"
             label="Indicator"
-            options={indicators}
+            options={countryCompatibleIndicators}
             placeholder="Search indicator, code, or unit..."
             query={indicatorQuery}
             selectedValue={indicator}
@@ -546,7 +569,7 @@ export default function HomePage() {
           <button
             className="downloadButton"
             type="submit"
-            disabled={isLoading || !country || !indicator}
+            disabled={isLoading || !country || !indicator || !selectedCountry || !selectedIndicator}
           >
             {isLoading ? (
               <>
