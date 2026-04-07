@@ -1,0 +1,29 @@
+{
+  "name": "imf-data-app",
+  "version": "1.0.0",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "clean": "node ./scripts/clean.mjs",
+    "clean:all": "node ./scripts/clean.mjs --all",
+    "dev": "cross-env NEXT_DIST_DIR=.next-dev npm run clean && cross-env NEXT_DIST_DIR=.next-dev next dev",
+    "build": "npm run clean && next build",
+    "start": "next start",
+    "typecheck": "tsc --noEmit --incremental false"
+  },
+  "dependencies": {
+    "next": "^15.2.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "cross-env": "^7.0.3",
+    "typescript": "^5.8.0"
+  }
+}
