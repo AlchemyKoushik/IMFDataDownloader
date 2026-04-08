@@ -1,53 +1,118 @@
-# IMF Data Downloader
+# 🌍 IMF Data Downloader
 
-IMF macroeconomic data downloader built with a Next.js frontend and a FastAPI backend.
+> Search IMF macroeconomic indicators, fetch data through a resilient FastAPI backend, and export clean Excel files without fragile browser-side proxy hacks.
 
-## Current State
+![Next.js](https://img.shields.io/badge/Frontend-Next.js_15-000000?style=for-the-badge&logo=next.js&logoColor=white)
+![React](https://img.shields.io/badge/UI-React_19-20232A?style=for-the-badge&logo=react&logoColor=61DAFB)
+![TypeScript](https://img.shields.io/badge/Code-TypeScript-3178C6?style=for-the-badge&logo=typescript&logoColor=white)
+![FastAPI](https://img.shields.io/badge/Backend-FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
+![Python](https://img.shields.io/badge/Python-3.11%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
+![Render](https://img.shields.io/badge/Deploy-Render-4E4EFD?style=for-the-badge&logo=render&logoColor=white)
+![Vercel](https://img.shields.io/badge/Frontend_Deploy-Vercel-000000?style=for-the-badge&logo=vercel&logoColor=white)
 
-This repository is not a browser-only IMF client anymore.
+## ✨ Overview
 
-The project currently runs as:
+This project is an IMF data exploration and export tool built with a split architecture:
 
 `Next.js frontend -> FastAPI backend -> IMF DataMapper API`
 
-The frontend UI keeps the searchable country and indicator workflow, while the backend now owns:
+That means the frontend no longer talks directly to the IMF API, no longer depends on CORS proxies, and no longer generates Excel files in the browser.
 
-- IMF API requests
-- retry and timeout handling
-- cache reuse
-- dataset validation and WEO fallback handling
-- Excel generation and file streaming
+## 🚀 Current Repo State
 
-## Live Frontend
+The repository currently includes:
 
-The production frontend is intended to run at:
+- ✅ Searchable country and indicator selection UI
+- ✅ Backend-driven IMF requests with retry logic
+- ✅ Backend-generated Excel downloads
+- ✅ In-memory caching for metadata and series requests
+- ✅ Dataset compatibility checks and WEO fallback handling
+- ✅ Production-oriented frontend API base URL config
+- ✅ Render deployment config for the backend
+- ✅ Favicon integrated into the Next.js app
+- ✅ Stable scrollbar layout behavior to avoid page shift
+
+## 🧠 Why This Exists
+
+The old approach was unreliable because browser requests were hitting upstream IMF endpoints through proxy services and short-lived request timeouts.
+
+This version moves the critical work into FastAPI so the app can:
+
+- make direct upstream requests
+- retry safely on network failures and IMF `5xx` responses
+- control concurrency
+- validate payloads on the server
+- stream Excel files back to the browser
+
+## 🌐 Live Frontend
+
+Production frontend target:
 
 `https://data.alchemy-research.com`
 
-For production to work correctly, the frontend must point to a deployed FastAPI backend through:
+Important:
 
-`NEXT_PUBLIC_API_BASE_URL`
+- The frontend must point to a real deployed backend through `NEXT_PUBLIC_API_BASE_URL`
+- The repo currently contains a production env template, not a guaranteed live backend URL
+- If that variable still points to a placeholder or invalid URL, the app will show a backend-unreachable error
 
-The repo currently includes:
+## 🏗️ Architecture
 
-- local dev fallback: `http://localhost:8000`
-- production env template in `imf-data-app/.env.production`
-- Render service config in `render.yaml`
+```text
+User
+  ↓
+Next.js frontend
+  ↓
+FastAPI backend
+  ↓
+IMF DataMapper API
+```
 
-## What Works Right Now
+Backend responsibilities:
 
-- Searchable country dropdown
-- Searchable indicator dropdown
-- Region-specific indicator filtering on the frontend
-- Backend validation for invalid or empty requests
-- Backend retry logic using `tenacity`
-- Backend concurrency limit for IMF requests
-- In-memory metadata and series caching
-- Backend-generated Excel downloads
-- Stable layout with reserved scrollbar space
-- App favicon integrated through the Next.js App Router
+- IMF API requests
+- timeout and retry handling
+- cache reuse
+- dataset validation
+- WEO fallback resolution
+- Excel generation
 
-## Project Structure
+Frontend responsibilities:
+
+- UI rendering
+- searchable dropdown interaction
+- displaying status and errors
+- download trigger flow
+
+## 🎯 Features
+
+- 🔎 Fast searchable country dropdown
+- 📊 Searchable indicator dropdown with compatibility filtering
+- 🧾 Excel export generated on the backend
+- 🛡️ Retry logic with `tenacity`
+- ⚡ Metadata and series caching
+- 🌍 CORS setup for local and production frontend origins
+- 🧰 One-click Windows launcher via `start-dev.bat`
+- 🎨 Custom favicon and polished UI shell
+
+## 🧱 Tech Stack
+
+### Frontend
+
+- `Next.js 15`
+- `React 19`
+- `TypeScript`
+
+### Backend
+
+- `FastAPI`
+- `uvicorn`
+- `httpx`
+- `tenacity`
+- `pandas`
+- `openpyxl`
+
+## 📁 Project Structure
 
 ```text
 .
@@ -88,33 +153,24 @@ The repo currently includes:
    `- tsconfig.json
 ```
 
-## Backend
+## 🔌 Backend API
 
-Backend stack:
-
-- `FastAPI`
-- `uvicorn`
-- `httpx`
-- `tenacity`
-- `pandas`
-- `openpyxl`
-
-Backend behavior:
-
-- `30s` upstream IMF timeout
-- retries on timeouts, network errors, and IMF `5xx` responses
-- max `3` concurrent IMF requests
-- CORS enabled for:
-  - `https://data.alchemy-research.com`
-  - `http://localhost:3000`
-  - `http://127.0.0.1:3000`
-
-Backend endpoints:
+Available endpoints:
 
 - `GET /`
 - `GET /metadata`
 - `POST /data`
 - `POST /download`
+
+Backend behavior:
+
+- `30s` upstream timeout for IMF requests
+- retries on timeouts, network errors, and IMF `5xx` responses
+- max `3` concurrent upstream IMF calls
+- CORS enabled for:
+  - `https://data.alchemy-research.com`
+  - `http://localhost:3000`
+  - `http://127.0.0.1:3000`
 
 Render start command:
 
@@ -122,24 +178,7 @@ Render start command:
 uvicorn app.main:app --host 0.0.0.0 --port $PORT
 ```
 
-## Frontend
-
-Frontend stack:
-
-- `Next.js 15`
-- `React 19`
-- `TypeScript`
-
-Frontend behavior:
-
-- fetches metadata and downloads through the backend only
-- uses `NEXT_PUBLIC_API_BASE_URL` when present
-- falls back to `http://localhost:8000` for local development
-- no proxy URLs
-- no direct IMF calls
-- no browser-side Excel generation
-
-## Environment
+## ⚙️ Environment Setup
 
 ### Local Development
 
@@ -159,25 +198,31 @@ python -m pip install -r requirements.txt
 uvicorn app.main:app --reload --port 8000
 ```
 
-App URL:
+Open:
 
 ```text
 http://localhost:3000
 ```
 
-Optional local frontend env:
+Optional local override:
 
 ```bash
 NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
 
-### Windows Launcher
+### Windows Quick Start
 
-Use the root script below to open backend, frontend, and the local site automatically:
+If you are on Windows, you can launch everything with:
 
 ```bat
 start-dev.bat
 ```
+
+That script starts:
+
+- the FastAPI backend
+- the Next.js frontend
+- your browser on the local app URL
 
 ### Production
 
@@ -187,19 +232,46 @@ Frontend production env template:
 NEXT_PUBLIC_API_BASE_URL=https://your-backend-url.onrender.com
 ```
 
-This value currently lives in:
+This template currently lives in:
 
 - `imf-data-app/.env.production`
-
-Before deploying, replace the placeholder URL with the real Render backend URL, or set the same variable in Vercel.
 
 Render deployment config already exists in:
 
 - `render.yaml`
 
-## Verification
+## 🚢 Deployment Notes
 
-Frontend:
+### Backend
+
+The backend is prepared for Render with:
+
+- `pip install -r requirements.txt`
+- `uvicorn app.main:app --host 0.0.0.0 --port $PORT`
+
+After deployment, FastAPI docs should be available at:
+
+```text
+https://your-backend-url.onrender.com/docs
+```
+
+### Frontend
+
+The frontend should be deployed with:
+
+- `NEXT_PUBLIC_API_BASE_URL` set to the real Render backend URL
+
+If this variable is left unset in production, the frontend falls back to:
+
+```text
+http://localhost:8000
+```
+
+That fallback is correct for local development only.
+
+## 🧪 Verification
+
+Frontend checks:
 
 ```bash
 cd imf-data-app
@@ -207,20 +279,20 @@ npm run typecheck
 npm run build
 ```
 
-Backend:
+Backend check:
 
 ```bash
 cd backend
 python -m compileall app
 ```
 
-## Notes
+## 📝 Notes
 
-- The frontend depends on a reachable backend in both staging and production.
-- If `NEXT_PUBLIC_API_BASE_URL` still points to a placeholder or invalid URL, the app will show a backend-unreachable error.
-- The repo tracks a production env template, not a guaranteed live backend URL.
+- This repo reflects the current architecture and tooling state.
+- The frontend depends on a reachable backend in staging and production.
 - Swagger UI should be available on the deployed backend at `/docs`.
+- The production env file in the repo is a template and may still need the final backend URL.
 
-## License
+## 📜 License
 
 MIT
