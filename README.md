@@ -132,13 +132,46 @@ npm run dev
 http://localhost:3000
 ```
 
-The frontend expects the backend at `http://localhost:8000` by default.
+The frontend expects the backend at `http://localhost:8000` by default during local development.
 
 If needed, set:
 
 ```bash
-NEXT_PUBLIC_BACKEND_URL=http://localhost:8000
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
 ```
+
+## Production Deployment
+
+### Backend on Render
+
+The repo now includes `render.yaml` so Render can deploy the backend from the `backend` directory with the correct commands:
+
+```bash
+pip install -r requirements.txt
+uvicorn app.main:app --host 0.0.0.0 --port $PORT
+```
+
+The backend CORS configuration now allows:
+
+- `https://data.alchemy-research.com`
+- `http://localhost:3000`
+- `http://127.0.0.1:3000`
+
+After the Render deploy finishes, verify:
+
+```text
+https://your-backend-url.onrender.com/docs
+```
+
+### Frontend on Vercel
+
+The frontend now reads its backend URL from `imf-data-app/.env.production`:
+
+```bash
+NEXT_PUBLIC_API_BASE_URL=https://your-backend-url.onrender.com
+```
+
+Replace the placeholder with your real Render backend URL, or set the same variable in Vercel project settings before redeploying the frontend.
 
 ## Verification
 

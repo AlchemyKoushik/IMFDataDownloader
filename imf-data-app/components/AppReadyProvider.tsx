@@ -4,7 +4,7 @@ import type { MutableRefObject, ReactNode } from "react";
 import { createContext, startTransition, useContext, useEffect, useRef, useState } from "react";
 
 import { LoadingScreen } from "@/components/LoadingScreen";
-import { BackendClientError, fetchMetadata, primeMetadataCache } from "@/lib/backendClient";
+import { BackendClientError, fetchMetadata, getApiBaseUrl, primeMetadataCache } from "@/lib/backendClient";
 import type { MetadataResponsePayload } from "@/types/imf";
 
 const LOADER_EXIT_MS = 500;
@@ -87,7 +87,7 @@ export function AppReadyProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      setLoadingStatus("Unable to load metadata. Make sure the FastAPI backend is running on port 8000.");
+      setLoadingStatus(`Unable to load metadata from ${getApiBaseUrl()}. Check the deployed backend URL and retry.`);
     }
   };
 

@@ -2,7 +2,7 @@
 
 import type { ApiErrorPayload, MetadataResponsePayload, SeriesResponsePayload } from "@/types/imf";
 
-const DEFAULT_BACKEND_URL = "http://localhost:8000";
+const DEFAULT_API_BASE_URL = "http://localhost:8000";
 const METADATA_STORAGE_KEY = "imf-metadata-cache-v4";
 const METADATA_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -27,10 +27,18 @@ export class BackendClientError extends Error {
 
 let metadataMemoryCache: CachedPayload<MetadataResponsePayload> | null = null;
 
-const getBackendBaseUrl = (): string =>
-  (process.env.NEXT_PUBLIC_BACKEND_URL?.trim() || DEFAULT_BACKEND_URL).replace(/\/+$/, "");
+export const getApiBaseUrl = (): string =>
+  (process.env.NEXT_PUBLIC_API_BASE_URL?.trim() || DEFAULT_API_BASE_URL).replace(/\/+$/, "");
 
 const isRecord = (value: unknown): value is Record<string, unknown> => typeof value === "object" && value !== null;
+
+const createNetworkError = (baseUrl: string, error: unknown): BackendClientError =>
+  new BackendClientError(
+    `Unable to reach backend at ${baseUrl}.`,
+    503,
+    "BACKEND_UNREACHABLE",
+    error instanceof Error ? error.message : undefined,
+  );
 
 const readStoredMetadata = (): MetadataResponsePayload | null => {
   if (typeof window === "undefined") {
@@ -107,6 +115,7 @@ const createBackendClientError = async (response: Response): Promise<BackendClie
 };
 
 const requestJson = async <T>(path: string, init?: RequestInit): Promise<T> => {
+  const baseUrl = getApiBaseUrl();
   const headers = new Headers(init?.headers);
   headers.set("Accept", "application/json");
 
@@ -114,11 +123,17 @@ const requestJson = async <T>(path: string, init?: RequestInit): Promise<T> => {
     headers.set("Content-Type", "application/json");
   }
 
-  const response = await fetch(`${getBackendBaseUrl()}${path}`, {
-    ...init,
-    cache: "no-store",
-    headers,
-  });
+  let response: Response;
+
+  try {
+    response = await fetch(`${baseUrl}${path}`, {
+      ...init,
+      cache: "no-store",
+      headers,
+    });
+  } catch (error) {
+    throw createNetworkError(baseUrl, error);
+  }
 
   if (!response.ok) {
     throw await createBackendClientError(response);
@@ -174,18 +189,25 @@ export async function fetchSeriesData(country: string, indicator: string): Promi
 }
 
 export async function downloadSeriesExcel(country: string, indicator: string): Promise<string> {
-  const response = await fetch(`${getBackendBaseUrl()}/download`, {
-    method: "POST",
-    cache: "no-store",
-    headers: {
-      Accept: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      country,
-      indicator,
-    }),
-  });
+  const baseUrl = getApiBaseUrl();
+  let response: Response;
+
+  try {
+    response = await fetch(`${baseUrl}/download`, {
+      method: "POST",
+      cache: "no-store",
+      headers: {
+        Accept: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        country,
+        indicator,
+      }),
+    });
+  } catch (error) {
+    throw createNetworkError(baseUrl, error);
+  }
 
   if (!response.ok) {
     throw await createBackendClientError(response);

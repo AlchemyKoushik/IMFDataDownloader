@@ -22,16 +22,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+DEFAULT_ALLOWED_ORIGINS = [
+    "https://data.alchemy-research.com",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+]
+
 
 def _get_allowed_origins() -> list[str]:
     configured = os.getenv("FRONTEND_ORIGINS")
     if not configured:
-        return [
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-        ]
+        return DEFAULT_ALLOWED_ORIGINS
 
-    return [origin.strip() for origin in configured.split(",") if origin.strip()]
+    configured_origins = [origin.strip() for origin in configured.split(",") if origin.strip()]
+    merged_origins = DEFAULT_ALLOWED_ORIGINS + configured_origins
+    # Preserve order while removing duplicates.
+    return list(dict.fromkeys(merged_origins))
 
 
 @asynccontextmanager
@@ -54,8 +60,8 @@ app = FastAPI(
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_get_allowed_origins(),
-    allow_credentials=False,
-    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_credentials=True,
+    allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["Content-Disposition", "X-Used-Fallback", "X-Resolved-Indicator", "X-Indicator-Code"],
 )

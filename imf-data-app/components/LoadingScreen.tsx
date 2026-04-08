@@ -121,7 +121,7 @@ export function LoadingScreen({
         </div>
 
         {canRetryManually ? (
-          <p className="loadingHint">Confirm the backend is running on http://localhost:8000, then retry.</p>
+          <p className="loadingHint">Confirm the backend service is reachable and the production API URL is configured correctly, then retry.</p>
         ) : null}
       </div>
     </div>
