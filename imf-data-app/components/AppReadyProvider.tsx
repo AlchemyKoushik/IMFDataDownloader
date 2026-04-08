@@ -4,15 +4,13 @@ import type { MutableRefObject, ReactNode } from "react";
 import { createContext, startTransition, useContext, useEffect, useRef, useState } from "react";
 
 import { LoadingScreen } from "@/components/LoadingScreen";
-import { fetchCountries, fetchIndicators, primeMetadataCache } from "@/lib/imfClient";
+import { BackendClientError, fetchMetadata, primeMetadataCache } from "@/lib/backendClient";
 import type { MetadataResponsePayload } from "@/types/imf";
 
 const LOADER_EXIT_MS = 500;
-const MAX_RETRIES = 3;
 const MIN_COUNTRY_COUNT = 200;
 const MIN_INDICATOR_COUNT = 100;
-const RETRY_DELAY_MS = 3_000;
-const RETRY_STORAGE_KEY = "imf-app-retry-count";
+const RETRY_COUNTER_LIMIT = 3;
 
 interface AppReadyContextValue {
   hasError: boolean;
@@ -37,51 +35,40 @@ export function AppReadyProvider({ children }: { children: ReactNode }) {
   const [hasError, setHasError] = useState(false);
   const [isLoadingScreenVisible, setIsLoadingScreenVisible] = useState(true);
   const [retryAttempt, setRetryAttempt] = useState(0);
-  const [isAutoRetrying, setIsAutoRetrying] = useState(false);
   const [canRetryManually, setCanRetryManually] = useState(false);
-  const reloadTimeoutRef = useRef<number | null>(null);
   const hideLoaderTimeoutRef = useRef<number | null>(null);
 
   const clearTimers = (): void => {
-    clearTimeoutRef(reloadTimeoutRef);
     clearTimeoutRef(hideLoaderTimeoutRef);
   };
 
-  const bootstrapApp = async (mode: "auto" | "manual" = "auto"): Promise<void> => {
+  const bootstrapApp = async (): Promise<void> => {
     if (typeof window === "undefined") {
       return;
     }
 
     clearTimers();
     setHasError(false);
-    setIsAutoRetrying(false);
     setCanRetryManually(false);
     setIsAppReady(false);
     setIsLoadingScreenVisible(true);
     setMetadata(null);
-    setLoadingStatus("Establishing secure connection...");
+    setLoadingStatus("Connecting to backend services...");
+    setRetryAttempt((current) => Math.min(current + 1, RETRY_COUNTER_LIMIT));
 
     try {
-      setLoadingStatus("Fetching IMF country catalog...");
-      const countries = await fetchCountries();
+      setLoadingStatus("Loading IMF catalog through FastAPI...");
+      const nextMetadata = await fetchMetadata();
 
-      setLoadingStatus("Loading indicators and datasets...");
-      const indicators = await fetchIndicators();
-
-      if (countries.length < MIN_COUNTRY_COUNT || indicators.length < MIN_INDICATOR_COUNT) {
+      if (nextMetadata.countries.length < MIN_COUNTRY_COUNT || nextMetadata.indicators.length < MIN_INDICATOR_COUNT) {
         throw new Error("Incomplete IMF metadata received.");
       }
 
-      const nextMetadata: MetadataResponsePayload = {
-        countries,
-        indicators,
-        lastUpdated: new Date().toISOString(),
-      };
-
       primeMetadataCache(nextMetadata);
-      window.sessionStorage.removeItem(RETRY_STORAGE_KEY);
       setRetryAttempt(0);
-      setLoadingStatus(`${countries.length} countries/regions and ${indicators.length} indicators loaded. API connection secured.`);
+      setLoadingStatus(
+        `${nextMetadata.countries.length} countries/regions and ${nextMetadata.indicators.length} indicators loaded.`,
+      );
 
       startTransition(() => {
         setMetadata(nextMetadata);
@@ -91,44 +78,25 @@ export function AppReadyProvider({ children }: { children: ReactNode }) {
       hideLoaderTimeoutRef.current = window.setTimeout(() => {
         setIsLoadingScreenVisible(false);
       }, LOADER_EXIT_MS);
-    } catch {
+    } catch (error) {
       setHasError(true);
-      const retries = Number(window.sessionStorage.getItem(RETRY_STORAGE_KEY) || "0");
+      setCanRetryManually(true);
 
-      if (mode === "auto" && retries < MAX_RETRIES) {
-        const nextRetry = retries + 1;
-
-        window.sessionStorage.setItem(RETRY_STORAGE_KEY, String(nextRetry));
-        setRetryAttempt(nextRetry);
-        setIsAutoRetrying(true);
-        setLoadingStatus("Connection failed. Retrying...");
-
-        reloadTimeoutRef.current = window.setTimeout(() => {
-          window.location.reload();
-        }, RETRY_DELAY_MS);
-
+      if (error instanceof BackendClientError) {
+        setLoadingStatus(error.message);
         return;
       }
 
-      window.sessionStorage.removeItem(RETRY_STORAGE_KEY);
-      setRetryAttempt(Math.max(retries, 1));
-      setCanRetryManually(true);
-      setLoadingStatus("Unable to connect. Please check your network.");
+      setLoadingStatus("Unable to load metadata. Make sure the FastAPI backend is running on port 8000.");
     }
   };
 
   const handleManualRetry = (): void => {
-    if (typeof window === "undefined") {
-      return;
-    }
-
-    window.sessionStorage.removeItem(RETRY_STORAGE_KEY);
-    setRetryAttempt(0);
-    void bootstrapApp("manual");
+    void bootstrapApp();
   };
 
   useEffect(() => {
-    void bootstrapApp("auto");
+    void bootstrapApp();
 
     return () => {
       clearTimers();
@@ -151,10 +119,10 @@ export function AppReadyProvider({ children }: { children: ReactNode }) {
           <LoadingScreen
             canRetryManually={canRetryManually}
             hasError={hasError}
-            isAutoRetrying={isAutoRetrying}
+            isAutoRetrying={false}
             isReady={isAppReady}
             loadingStatus={loadingStatus}
-            maxRetries={MAX_RETRIES}
+            maxRetries={RETRY_COUNTER_LIMIT}
             onRetry={handleManualRetry}
             retryAttempt={retryAttempt}
           />

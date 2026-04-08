@@ -19,7 +19,7 @@ const bodyFont = IBM_Plex_Sans({
 
 export const metadata: Metadata = {
   title: "IMF Data Downloader",
-  description: "Fetch IMF macroeconomic indicators and download them as a clean Excel file.",
+  description: "Fetch IMF macroeconomic indicators through a FastAPI backend and download them as a clean Excel file.",
 };
 
 export default function RootLayout({

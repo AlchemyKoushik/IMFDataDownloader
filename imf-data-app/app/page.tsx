@@ -4,9 +4,8 @@ import type { FormEvent } from "react";
 import { useEffect, useRef, useState } from "react";
 
 import { useAppReady } from "@/components/AppReadyProvider";
+import { BackendClientError, downloadSeriesExcel, fetchSeriesData } from "@/lib/backendClient";
 import { REGION_SPECIFIC_DATASET_HINT, isIndicatorAvailableForCountry } from "@/lib/datasetValidation";
-import { generateExcel } from "@/lib/excelGenerator";
-import { fetchSafeSeriesData, ImfClientError } from "@/lib/imfClient";
 import { IndicatorOption, SelectOption } from "@/types/imf";
 
 type NoticeTone = "idle" | "success" | "error" | "empty";
@@ -435,43 +434,38 @@ export default function HomePage() {
 
     setIsLoading(true);
     setNoticeTone("idle");
-    setNoticeMessage("Fetching IMF data...");
+    setNoticeMessage("Requesting IMF data from the backend...");
 
     try {
-      const result = await fetchSafeSeriesData(selectedCountry.value, selectedIndicator, indicators);
-      if (!result.payload.rows.length) {
+      const result = await fetchSeriesData(selectedCountry.value, selectedIndicator.value);
+      if (!result.data.length) {
         setNoticeTone("empty");
         setNoticeMessage("No data available for this selection.");
         return;
       }
 
-      setNoticeMessage(result.usedFallback ? "Generating Excel from WEO fallback..." : "Generating Excel...");
-
-      await new Promise<void>((resolve, reject) => {
-        window.setTimeout(() => {
-          try {
-            generateExcel(result.payload.rows, selectedCountry.label, result.resolvedIndicator.label);
-            resolve();
-          } catch (error) {
-            reject(error);
-          }
-        }, 0);
-      });
+      setNoticeMessage(result.usedFallback ? "Preparing Excel from the WEO fallback..." : "Preparing Excel...");
+      await downloadSeriesExcel(selectedCountry.value, selectedIndicator.value);
 
       setNoticeTone("success");
       setNoticeMessage(
         result.usedFallback
-          ? `Downloaded ${result.payload.rows.length} IMF observations successfully. No data was available for the selected dataset, so the WEO fallback was used.`
-          : `Downloaded ${result.payload.rows.length} IMF observations successfully.`,
+          ? `Downloaded ${result.data.length} IMF observations successfully. ${result.message ?? "The WEO fallback was used."}`
+          : `Downloaded ${result.data.length} IMF observations successfully.`,
       );
     } catch (error) {
-      if (error instanceof ImfClientError) {
+      if (error instanceof BackendClientError) {
         if (error.code === "NO_DATA" || error.code === "NO_DATA_AFTER_FALLBACK") {
           setNoticeTone("empty");
           setNoticeMessage(error.message);
-        } else if (error.code === "INVALID_DATASET_COUNTRY") {
+        } else if (
+          error.code === "INVALID_DATASET_COUNTRY" ||
+          error.code === "VALIDATION_ERROR" ||
+          error.code === "COUNTRY_NOT_FOUND" ||
+          error.code === "INDICATOR_NOT_FOUND"
+        ) {
           setNoticeTone("error");
-          setNoticeMessage("This dataset is not available for the selected country, and no WEO fallback exists for this indicator.");
+          setNoticeMessage(error.message);
         } else {
           setNoticeTone("error");
           setNoticeMessage(error.message);
@@ -489,11 +483,11 @@ export default function HomePage() {
     <main className="pageShell">
       <section className="heroPanel">
         <div className="heroCopy">
-          <span className="eyebrow">Production-ready IMF downloader</span>
+          <span className="eyebrow">Powered by IMF API</span>
           <h1>IMF World Economic Outlook Data.</h1>
           <p>
-            Search the live IMF catalog, fetch time-series data through resilient public proxy connectors, and
-            generate a clean Excel export directly in the browser.
+            Search the live IMF catalog, fetch time-series data through a dedicated FastAPI backend, and download
+            a clean Excel export without proxy-related failures.
           </p>
 
           <div className="statsRow" aria-label="Catalog statistics">
@@ -574,7 +568,7 @@ export default function HomePage() {
             {isLoading ? (
               <>
                 <span className="spinner" aria-hidden="true" />
-                Generating Excel...
+                Preparing Download...
               </>
             ) : (
               "Download Excel"

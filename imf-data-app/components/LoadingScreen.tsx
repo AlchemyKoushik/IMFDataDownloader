@@ -58,7 +58,7 @@ export function LoadingScreen({
   const dynamicMessage = hasError
     ? isAutoRetrying
       ? "Retrying connection to IMF services..."
-      : "Automatic retries finished. You can retry once your connection is stable."
+      : "Unable to reach the backend or IMF services. Start the FastAPI server and retry."
     : LOADING_MESSAGES[messageIndex];
 
   const progress = hasError
@@ -102,7 +102,7 @@ export function LoadingScreen({
           {hasError ? (
             <>
               <span>
-                Attempt {Math.min(retryAttempt, maxRetries)} of {maxRetries}
+                Attempt {Math.max(Math.min(retryAttempt, maxRetries), 1)} of {maxRetries}
               </span>
               {isAutoRetrying ? (
                 <span className="loadingRetryBlink">Refreshing in 3 seconds...</span>
@@ -121,7 +121,7 @@ export function LoadingScreen({
         </div>
 
         {canRetryManually ? (
-          <p className="loadingHint">Your last automatic retry did not succeed, so the app is waiting for manual retry.</p>
+          <p className="loadingHint">Confirm the backend is running on http://localhost:8000, then retry.</p>
         ) : null}
       </div>
     </div>

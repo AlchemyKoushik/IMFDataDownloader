@@ -28,6 +28,8 @@
 }
 
 html {
+  overflow-y: scroll;
+  scrollbar-gutter: stable;
   background:
     radial-gradient(circle at top left, rgba(13, 124, 102, 0.18), transparent 32%),
     radial-gradient(circle at bottom right, rgba(230, 150, 65, 0.18), transparent 28%),
