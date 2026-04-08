@@ -200,6 +200,9 @@ function SearchableSelector<T extends SelectOption>({
           </span>
 
           <input
+            autoComplete="off"
+            autoCorrect="off"
+            spellCheck={false}
             ref={inputRef}
             id={id}
             className="dropdownInput"
@@ -212,9 +215,8 @@ function SearchableSelector<T extends SelectOption>({
               openDropdown();
             }}
             onClick={openDropdown}
-            onFocus={(event) => {
+            onFocus={() => {
               openDropdown();
-              event.currentTarget.select();
             }}
             onKeyDown={(event) => {
               if (event.key === "Escape") {
@@ -409,7 +411,7 @@ export default function HomePage() {
       setNoticeTone("idle");
       setNoticeMessage("Some datasets are region-specific. The indicator list was updated for the selected country.");
     }
-  }, [countryCompatibleIndicators, indicator, indicators]);
+  }, [country, indicator, indicators]);
 
   useEffect(() => {
     if (!metadata) {

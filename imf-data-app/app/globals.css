@@ -479,10 +479,22 @@ input {
   border: 0;
   background: transparent;
   color: var(--text-primary);
+  font: inherit;
 }
 
 .dropdownInput::placeholder {
   color: rgba(70, 99, 109, 0.75);
+}
+
+.dropdownInput:-webkit-autofill,
+.dropdownInput:-webkit-autofill:hover,
+.dropdownInput:-webkit-autofill:focus {
+  -webkit-text-fill-color: var(--text-primary);
+  caret-color: var(--text-primary);
+  box-shadow: inset 0 0 0 999px rgba(255, 252, 247, 0.96);
+  -webkit-box-shadow: inset 0 0 0 999px rgba(255, 252, 247, 0.96);
+  font: inherit;
+  transition: background-color 9999s ease-in-out 0s;
 }
 
 .dropdownInput:focus {
@@ -519,6 +531,11 @@ button:focus-visible,
 input:focus-visible {
   outline: none;
   box-shadow: 0 0 0 4px var(--accent-glow);
+}
+
+.dropdownInput:focus-visible,
+.dropdownToggle:focus-visible {
+  box-shadow: none;
 }
 
 .dropdownChevron {
