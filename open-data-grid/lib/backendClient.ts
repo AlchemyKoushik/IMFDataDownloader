@@ -1,6 +1,12 @@
 "use client";
 
-import type { ApiErrorPayload, MetadataResponsePayload, SeriesResponsePayload } from "@/types/imf";
+import type {
+  ApiErrorPayload,
+  ImfBulkDataRequestPayload,
+  ImfBulkSeriesResponsePayload,
+  MetadataResponsePayload,
+  SeriesResponsePayload,
+} from "@/types/imf";
 
 const DEFAULT_API_BASE_URL = "http://localhost:8000";
 const METADATA_STORAGE_KEY = "imf-metadata-cache-v4";
@@ -114,7 +120,7 @@ const createBackendClientError = async (response: Response): Promise<BackendClie
   return new BackendClientError(message, response.status, code, details);
 };
 
-const requestJson = async <T>(path: string, init?: RequestInit): Promise<T> => {
+export const requestJson = async <T>(path: string, init?: RequestInit): Promise<T> => {
   const baseUrl = getApiBaseUrl();
   const headers = new Headers(init?.headers);
   headers.set("Accept", "application/json");
@@ -188,22 +194,39 @@ export async function fetchSeriesData(country: string, indicator: string): Promi
   });
 }
 
+export async function fetchBulkSeriesData(
+  payload: ImfBulkDataRequestPayload,
+): Promise<ImfBulkSeriesResponsePayload> {
+  return requestJson<ImfBulkSeriesResponsePayload>("/imf/bulk-data", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function downloadSeriesExcel(country: string, indicator: string): Promise<string> {
+  return downloadBackendFile("/download", {
+    country,
+    indicator,
+  });
+}
+
+export async function downloadBulkSeriesExcel(payload: ImfBulkDataRequestPayload): Promise<string> {
+  return downloadBackendFile("/imf/bulk-download", payload);
+}
+
+export async function downloadBackendFile(path: string, body: unknown): Promise<string> {
   const baseUrl = getApiBaseUrl();
   let response: Response;
 
   try {
-    response = await fetch(`${baseUrl}/download`, {
+    response = await fetch(`${baseUrl}${path}`, {
       method: "POST",
       cache: "no-store",
       headers: {
         Accept: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({
-        country,
-        indicator,
-      }),
+      body: JSON.stringify(body),
     });
   } catch (error) {
     throw createNetworkError(baseUrl, error);

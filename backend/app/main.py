@@ -13,7 +13,9 @@ from fastapi.responses import JSONResponse
 
 from app.models.request_models import ErrorResponse
 from app.routes.data import router as data_router
+from app.routes.worldbank import router as worldbank_router
 from app.services.imf_service import IMFService, IMFServiceError
+from app.services.worldbank_service import WorldBankService, WorldBankServiceError
 
 
 logging.basicConfig(
@@ -46,13 +48,14 @@ async def lifespan(app: FastAPI):
     headers = {"Accept": "application/json"}
     async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
         app.state.imf_service = IMFService(client)
+        app.state.worldbank_service = WorldBankService(client)
         logger.info("FastAPI backend started")
         yield
     logger.info("FastAPI backend stopped")
 
 
 app = FastAPI(
-    title="IMF Data Downloader Backend",
+    title="Alchemy's Open Data Grid Backend",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -67,6 +70,7 @@ app.add_middleware(
 )
 
 app.include_router(data_router)
+app.include_router(worldbank_router)
 
 
 @app.middleware("http")
@@ -99,6 +103,13 @@ async def handle_imf_service_error(_: Request, exc: IMFServiceError) -> JSONResp
     return JSONResponse(status_code=exc.status_code, content=payload.model_dump())
 
 
+@app.exception_handler(WorldBankServiceError)
+async def handle_worldbank_service_error(_: Request, exc: WorldBankServiceError) -> JSONResponse:
+    logger.warning("handled service error code=%s status=%s message=%s", exc.code, exc.status_code, exc.message)
+    payload = ErrorResponse(code=exc.code, message=exc.message, details=exc.details)
+    return JSONResponse(status_code=exc.status_code, content=payload.model_dump())
+
+
 @app.exception_handler(RequestValidationError)
 async def handle_validation_error(_: Request, exc: RequestValidationError) -> JSONResponse:
     details = "; ".join(
@@ -114,4 +125,4 @@ async def handle_validation_error(_: Request, exc: RequestValidationError) -> JS
 
 @app.get("/")
 async def root() -> dict[str, str]:
-    return {"message": "IMF Data Downloader backend is running."}
+    return {"message": "Alchemy's Open Data Grid backend is running."}

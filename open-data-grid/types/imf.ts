@@ -32,6 +32,26 @@ export interface SeriesResponsePayload {
   lastUpdated: string;
 }
 
+export interface ImfGridRow {
+  country: string;
+  indicator: string;
+  year: number;
+  value: number;
+}
+
+export interface ImfBulkDataRequestPayload {
+  countries: string[];
+  indicators: string[];
+  latestYears?: number;
+}
+
+export interface ImfBulkSeriesResponsePayload {
+  rows: ImfGridRow[];
+  totalRows: number;
+  warnings: string[];
+  lastUpdated: string;
+}
+
 export interface ApiErrorPayload {
   error: true;
   code: string;

@@ -9,7 +9,18 @@ from typing import Any
 
 import httpx
 
-from app.models.request_models import DataRequest, IndicatorOption, MetadataOption, MetadataResponse, Observation, SeriesResponse
+from app.models.request_models import (
+    BulkDataRequest,
+    BulkSeriesResponse,
+    DataRequest,
+    GridObservation,
+    IndicatorOption,
+    MetadataOption,
+    MetadataResponse,
+    Observation,
+    SeriesResponse,
+)
+from app.utils.cache import TTLCache
 from app.utils.retry import RetryableUpstreamError, run_with_retry
 
 
@@ -132,37 +143,27 @@ class IMFServiceError(Exception):
 
 
 @dataclass(slots=True)
-class CacheEntry[T]:
-    value: T
-    expires_at: float
-
-
-class TTLCache[T]:
-    def __init__(self, ttl_seconds: int):
-        self._ttl_seconds = ttl_seconds
-        self._values: dict[str, CacheEntry[T]] = {}
-
-    def get(self, key: str) -> T | None:
-        entry = self._values.get(key)
-        if entry is None:
-            return None
-
-        if entry.expires_at <= time.monotonic():
-            self._values.pop(key, None)
-            return None
-
-        return entry.value
-
-    def set(self, key: str, value: T) -> None:
-        self._values[key] = CacheEntry(value=value, expires_at=time.monotonic() + self._ttl_seconds)
-
-
-@dataclass(slots=True)
 class SeriesPayload:
     country: str
     indicator: str
     data: list[Observation]
     last_updated: str
+
+
+@dataclass(slots=True)
+class ResolvedSeriesResult:
+    country: MetadataOption
+    requested_indicator: IndicatorOption
+    resolved_indicator: IndicatorOption
+    payload: SeriesPayload
+    used_fallback: bool
+    message: str | None
+
+
+@dataclass(slots=True)
+class BulkSelectionResult:
+    rows: list[GridObservation]
+    warnings: list[str]
 
 
 def normalize_code(value: str | None) -> str:
@@ -261,6 +262,35 @@ def resolve_weo_fallback_indicator(indicator: IndicatorOption, indicators: list[
     return None
 
 
+def select_latest_year_rows(rows: list[GridObservation], latest_years: int) -> tuple[list[GridObservation], str | None]:
+    if not rows:
+        return [], None
+
+    current_year = time.gmtime().tm_year
+    target_start_year = current_year - latest_years + 1
+    requested_window_rows = [row for row in rows if target_start_year <= row.year <= current_year]
+
+    if len(requested_window_rows) >= latest_years:
+        return requested_window_rows[-latest_years:], None
+
+    fallback_rows = rows[-min(latest_years, len(rows)) :]
+    start_year = fallback_rows[0].year
+    end_year = fallback_rows[-1].year
+
+    if len(fallback_rows) < latest_years:
+        warning = (
+            f"{rows[0].country} / {rows[0].indicator}: data is not available for the latest {latest_years} years. "
+            f"Exporting {len(fallback_rows)} available years instead ({start_year}-{end_year})."
+        )
+    else:
+        warning = (
+            f"{rows[0].country} / {rows[0].indicator}: data is not available for the latest {latest_years} years. "
+            f"Exporting the last {latest_years} available years instead ({start_year}-{end_year})."
+        )
+
+    return fallback_rows, warning
+
+
 class IMFService:
     def __init__(self, client: httpx.AsyncClient):
         self._client = client
@@ -299,20 +329,89 @@ class IMFService:
 
     async def get_series(self, request: DataRequest) -> SeriesResponse:
         metadata = await self.get_metadata()
+        result = await self._resolve_series(metadata, request.country, request.indicator)
+
+        return SeriesResponse(
+            country=request.country,
+            countryLabel=result.country.label,
+            indicator=result.resolved_indicator.value,
+            indicatorLabel=result.resolved_indicator.label,
+            data=result.payload.data,
+            usedFallback=result.used_fallback,
+            message=result.message,
+            lastUpdated=result.payload.last_updated,
+        )
+
+    async def get_bulk_series(self, request: BulkDataRequest) -> BulkSeriesResponse:
+        metadata = await self.get_metadata()
         countries_by_code = {country.value: country for country in metadata.countries}
         indicators_by_code = {indicator.value: indicator for indicator in metadata.indicators}
 
-        country = countries_by_code.get(request.country)
+        missing_countries = [country_code for country_code in request.countries if country_code not in countries_by_code]
+        if missing_countries:
+            raise IMFServiceError(
+                "One or more selected countries are not available in the IMF catalog.",
+                400,
+                "COUNTRY_NOT_FOUND",
+                details=", ".join(missing_countries),
+            )
+
+        missing_indicators = [indicator_code for indicator_code in request.indicators if indicator_code not in indicators_by_code]
+        if missing_indicators:
+            raise IMFServiceError(
+                "One or more selected indicators are not available in the IMF catalog.",
+                400,
+                "INDICATOR_NOT_FOUND",
+                details=", ".join(missing_indicators),
+            )
+
+        tasks = [
+            self._get_bulk_selection_result(metadata, country_code, indicator_code)
+            for country_code in request.countries
+            for indicator_code in request.indicators
+        ]
+        selection_results = await asyncio.gather(*tasks)
+
+        rows: list[GridObservation] = []
+        warnings: list[str] = []
+        for selection_result in selection_results:
+            next_rows = selection_result.rows
+            if request.latest_years is not None and selection_result.rows:
+                next_rows, latest_year_warning = select_latest_year_rows(selection_result.rows, request.latest_years)
+                if latest_year_warning:
+                    warnings.append(latest_year_warning)
+
+            rows.extend(next_rows)
+            warnings.extend(selection_result.warnings)
+
+        rows.sort(key=lambda row: (row.country.casefold(), row.indicator.casefold(), row.year))
+
+        if not rows:
+            warning_text = warnings[0] if warnings else "No IMF data is available for the selected countries and indicators."
+            raise IMFServiceError(warning_text, 404, "NO_DATA")
+
+        return BulkSeriesResponse(
+            rows=rows,
+            totalRows=len(rows),
+            warnings=warnings,
+            lastUpdated=self._utc_now(),
+        )
+
+    async def _resolve_series(self, metadata: MetadataResponse, country_code: str, indicator_code: str) -> ResolvedSeriesResult:
+        countries_by_code = {country.value: country for country in metadata.countries}
+        indicators_by_code = {indicator.value: indicator for indicator in metadata.indicators}
+
+        country = countries_by_code.get(country_code)
         if country is None:
             raise IMFServiceError("The selected country is not available in the IMF catalog.", 400, "COUNTRY_NOT_FOUND")
 
-        selected_indicator = indicators_by_code.get(request.indicator)
+        selected_indicator = indicators_by_code.get(indicator_code)
         if selected_indicator is None:
             raise IMFServiceError("The selected indicator is not available in the IMF catalog.", 400, "INDICATOR_NOT_FOUND")
 
         fallback_indicator = resolve_weo_fallback_indicator(selected_indicator, metadata.indicators)
 
-        if not is_dataset_valid_for_country(request.country, selected_indicator.dataset):
+        if not is_dataset_valid_for_country(country_code, selected_indicator.dataset):
             if fallback_indicator is None:
                 raise IMFServiceError(
                     get_dataset_country_message(selected_indicator.dataset),
@@ -321,7 +420,7 @@ class IMFService:
                 )
 
             try:
-                payload = await self._get_series_payload(request.country, fallback_indicator.value)
+                payload = await self._get_series_payload(country_code, fallback_indicator.value)
             except IMFServiceError as exc:
                 if exc.code == "NO_DATA":
                     raise IMFServiceError(
@@ -331,28 +430,24 @@ class IMFService:
                     ) from exc
                 raise
 
-            return SeriesResponse(
-                country=request.country,
-                countryLabel=country.label,
-                indicator=fallback_indicator.value,
-                indicatorLabel=fallback_indicator.label,
-                data=payload.data,
-                usedFallback=True,
+            return ResolvedSeriesResult(
+                country=country,
+                requested_indicator=selected_indicator,
+                resolved_indicator=fallback_indicator,
+                payload=payload,
+                used_fallback=True,
                 message="No data was available for the requested dataset, so the WEO fallback was used.",
-                lastUpdated=payload.last_updated,
             )
 
         try:
-            payload = await self._get_series_payload(request.country, selected_indicator.value)
-            return SeriesResponse(
-                country=request.country,
-                countryLabel=country.label,
-                indicator=selected_indicator.value,
-                indicatorLabel=selected_indicator.label,
-                data=payload.data,
-                usedFallback=False,
+            payload = await self._get_series_payload(country_code, selected_indicator.value)
+            return ResolvedSeriesResult(
+                country=country,
+                requested_indicator=selected_indicator,
+                resolved_indicator=selected_indicator,
+                payload=payload,
+                used_fallback=False,
                 message=None,
-                lastUpdated=payload.last_updated,
             )
         except IMFServiceError as exc:
             can_fallback = (
@@ -364,7 +459,7 @@ class IMFService:
                 raise
 
             try:
-                payload = await self._get_series_payload(request.country, fallback_indicator.value)
+                payload = await self._get_series_payload(country_code, fallback_indicator.value)
             except IMFServiceError as fallback_exc:
                 if fallback_exc.code == "NO_DATA":
                     raise IMFServiceError(
@@ -374,16 +469,50 @@ class IMFService:
                     ) from fallback_exc
                 raise
 
-            return SeriesResponse(
-                country=request.country,
-                countryLabel=country.label,
-                indicator=fallback_indicator.value,
-                indicatorLabel=fallback_indicator.label,
-                data=payload.data,
-                usedFallback=True,
+            return ResolvedSeriesResult(
+                country=country,
+                requested_indicator=selected_indicator,
+                resolved_indicator=fallback_indicator,
+                payload=payload,
+                used_fallback=True,
                 message="No data was available for the requested dataset, so the WEO fallback was used.",
-                lastUpdated=payload.last_updated,
             )
+
+    async def _get_bulk_selection_result(
+        self,
+        metadata: MetadataResponse,
+        country_code: str,
+        indicator_code: str,
+    ) -> BulkSelectionResult:
+        try:
+            result = await self._resolve_series(metadata, country_code, indicator_code)
+        except IMFServiceError as exc:
+            if exc.code in {"INVALID_DATASET_COUNTRY", "NO_DATA", "NO_DATA_AFTER_FALLBACK"}:
+                country_label = next((country.label for country in metadata.countries if country.value == country_code), country_code)
+                indicator_label = next((indicator.label for indicator in metadata.indicators if indicator.value == indicator_code), indicator_code)
+                return BulkSelectionResult(
+                    rows=[],
+                    warnings=[f"{country_label} / {indicator_label}: {exc.message}"],
+                )
+            raise
+
+        warnings: list[str] = []
+        if result.used_fallback:
+            warnings.append(
+                f"{result.country.label} / {result.requested_indicator.label}: exported using the IMF WEO fallback ({result.resolved_indicator.label})."
+            )
+
+        rows = [
+            GridObservation(
+                country=result.country.label,
+                indicator=result.resolved_indicator.label,
+                year=observation.year,
+                value=observation.value,
+            )
+            for observation in result.payload.data
+        ]
+
+        return BulkSelectionResult(rows=rows, warnings=warnings)
 
     async def _get_series_payload(self, country: str, indicator: str) -> SeriesPayload:
         cache_key = f"{normalize_code(country)}:{normalize_code(indicator)}"

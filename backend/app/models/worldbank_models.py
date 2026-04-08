@@ -1,29 +1,30 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from app.models.request_models import MetadataOption
 
 
-def _normalize_code(value: str) -> str:
+def _normalize_country_code(value: str) -> str:
     normalized = value.strip().upper()
     if not normalized:
         raise ValueError("must not be empty")
     return normalized
 
 
-class DataRequest(BaseModel):
-    country: str = Field(..., min_length=1)
-    indicator: str = Field(..., min_length=1)
-
-    @field_validator("country", "indicator")
-    @classmethod
-    def normalize_code(cls, value: str) -> str:
-        return _normalize_code(value)
+def _normalize_indicator_code(value: str) -> str:
+    normalized = value.strip()
+    if not normalized:
+        raise ValueError("must not be empty")
+    return normalized
 
 
-class BulkDataRequest(BaseModel):
+class WorldBankDataRequest(BaseModel):
     countries: list[str] = Field(..., min_length=1)
     indicators: list[str] = Field(..., min_length=1)
     latest_years: int | None = Field(default=None, alias="latestYears", ge=1)
+    start_year: int | None = Field(default=None, alias="startYear", ge=1900)
+    end_year: int | None = Field(default=None, alias="endYear", ge=1900)
 
     @field_validator("countries", mode="before")
     @classmethod
@@ -45,7 +46,7 @@ class BulkDataRequest(BaseModel):
         normalized: list[str] = []
         seen: set[str] = set()
         for value in values:
-            country_code = _normalize_code(value)
+            country_code = _normalize_country_code(value)
             if country_code not in seen:
                 seen.add(country_code)
                 normalized.append(country_code)
@@ -57,71 +58,47 @@ class BulkDataRequest(BaseModel):
         normalized: list[str] = []
         seen: set[str] = set()
         for value in values:
-            indicator_code = _normalize_code(value)
+            indicator_code = _normalize_indicator_code(value)
             if indicator_code not in seen:
                 seen.add(indicator_code)
                 normalized.append(indicator_code)
         return normalized
 
+    @model_validator(mode="after")
+    def validate_year_range(self) -> "WorldBankDataRequest":
+        if self.latest_years is not None and (self.start_year is not None or self.end_year is not None):
+            raise ValueError("Provide either latestYears or startYear/endYear, not both")
+
+        if (self.start_year is None) != (self.end_year is None):
+            raise ValueError("startYear and endYear must be provided together")
+
+        if self.start_year is not None and self.end_year is not None and self.start_year > self.end_year:
+            raise ValueError("startYear must be less than or equal to endYear")
+
+        return self
+
     model_config = ConfigDict(populate_by_name=True)
 
 
-class MetadataOption(BaseModel):
-    label: str
-    value: str
-
-
-class IndicatorOption(MetadataOption):
-    description: str | None = None
-    source: str | None = None
-    unit: str | None = None
-    dataset: str | None = None
-
-
-class Observation(BaseModel):
-    year: int
-    value: float
-
-
-class GridObservation(BaseModel):
+class WorldBankRow(BaseModel):
     country: str
     indicator: str
     year: int
     value: float
 
 
-class MetadataResponse(BaseModel):
+class WorldBankMetadataResponse(BaseModel):
     countries: list[MetadataOption]
-    indicators: list[IndicatorOption]
+    indicators: list[MetadataOption]
     last_updated: str = Field(alias="lastUpdated")
 
     model_config = ConfigDict(populate_by_name=True)
 
 
-class SeriesResponse(BaseModel):
-    country: str
-    country_label: str = Field(alias="countryLabel")
-    indicator: str
-    indicator_label: str = Field(alias="indicatorLabel")
-    data: list[Observation]
-    used_fallback: bool = Field(alias="usedFallback")
-    message: str | None = None
-    last_updated: str = Field(alias="lastUpdated")
-
-    model_config = ConfigDict(populate_by_name=True)
-
-
-class BulkSeriesResponse(BaseModel):
-    rows: list[GridObservation]
+class WorldBankDataResponse(BaseModel):
+    rows: list[WorldBankRow]
     total_rows: int = Field(alias="totalRows")
     warnings: list[str] = Field(default_factory=list)
     last_updated: str = Field(alias="lastUpdated")
 
     model_config = ConfigDict(populate_by_name=True)
-
-
-class ErrorResponse(BaseModel):
-    error: bool = True
-    code: str
-    message: str
-    details: str | None = None

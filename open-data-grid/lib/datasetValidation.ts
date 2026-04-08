@@ -160,6 +160,14 @@ export function isIndicatorAvailableForCountry(countryCode: string, indicator: I
   return isDatasetValidForCountry(countryCode, indicator.dataset);
 }
 
+export function isIndicatorAvailableForAnyCountry(countryCodes: string[], indicator: IndicatorOption): boolean {
+  if (!countryCodes.length) {
+    return true;
+  }
+
+  return countryCodes.some((countryCode) => isDatasetValidForCountry(countryCode, indicator.dataset));
+}
+
 export function getDatasetCountryMessage(dataset: string | undefined): string {
   if (getDatasetCode(dataset) === "AFRREO") {
     return "AFR Regional Economic Outlook indicators are available only for African countries.";

@@ -2,35 +2,37 @@
 
 import { useEffect, useState } from "react";
 
-const LOADING_MESSAGES = [
-  "Establishing secure connection...",
-  "Fetching IMF country catalog...",
-  "Loading indicators and datasets...",
-  "Preparing data environment...",
-  "Almost ready...",
-];
-
 const MESSAGE_ROTATE_MS = 2_400;
 
 interface LoadingScreenProps {
   canRetryManually: boolean;
   hasError: boolean;
+  idleFooterLabel: string;
   isAutoRetrying: boolean;
   isReady: boolean;
+  kicker: string;
   loadingStatus: string;
   maxRetries: number;
   onRetry: () => void;
+  retryHint: string;
+  rotatingMessages: string[];
+  title: string;
   retryAttempt: number;
 }
 
 export function LoadingScreen({
   canRetryManually,
   hasError,
+  idleFooterLabel,
   isAutoRetrying,
   isReady,
+  kicker,
   loadingStatus,
   maxRetries,
   onRetry,
+  retryHint,
+  rotatingMessages,
+  title,
   retryAttempt,
 }: LoadingScreenProps) {
   const [messageIndex, setMessageIndex] = useState(0);
@@ -41,13 +43,13 @@ export function LoadingScreen({
     }
 
     const interval = window.setInterval(() => {
-      setMessageIndex((current) => (current + 1) % LOADING_MESSAGES.length);
+      setMessageIndex((current) => (current + 1) % rotatingMessages.length);
     }, MESSAGE_ROTATE_MS);
 
     return () => {
       window.clearInterval(interval);
     };
-  }, [hasError, isReady]);
+  }, [hasError, isReady, rotatingMessages.length]);
 
   useEffect(() => {
     if (hasError) {
@@ -57,15 +59,15 @@ export function LoadingScreen({
 
   const dynamicMessage = hasError
     ? isAutoRetrying
-      ? "Retrying connection to IMF services..."
-      : "Unable to reach the backend or IMF services. Start the FastAPI server and retry."
-    : LOADING_MESSAGES[messageIndex];
+      ? `Retrying connection to ${kicker} services...`
+      : `Unable to reach the backend or ${kicker} services. Start the FastAPI server and retry.`
+    : rotatingMessages[messageIndex];
 
   const progress = hasError
     ? isAutoRetrying
       ? 42
       : 100
-    : ((messageIndex + 1) / LOADING_MESSAGES.length) * 100;
+    : ((messageIndex + 1) / rotatingMessages.length) * 100;
 
   return (
     <div
@@ -81,8 +83,8 @@ export function LoadingScreen({
           <span className="loadingPulse loadingPulse-secondary" />
         </div>
 
-        <p className="loadingKicker">IMF Data Downloader</p>
-        <h2>Connecting to IMF Data Services...</h2>
+        <p className="loadingKicker">{kicker}</p>
+        <h2>{title}</h2>
         <p className={`loadingMessage${hasError ? " loadingMessage-error" : ""}`}>{dynamicMessage}</p>
 
         <div className="loadingProgress" aria-hidden="true">
@@ -115,13 +117,13 @@ export function LoadingScreen({
           ) : (
             <>
               <span>Metadata bootstrap in progress</span>
-              <span>UI unlocks after the IMF catalog passes validation.</span>
+              <span>{idleFooterLabel}</span>
             </>
           )}
         </div>
 
         {canRetryManually ? (
-          <p className="loadingHint">Confirm the backend service is reachable and the production API URL is configured correctly, then retry.</p>
+          <p className="loadingHint">{retryHint}</p>
         ) : null}
       </div>
     </div>
