@@ -11,7 +11,6 @@ import httpx
 from app.models.request_models import MetadataOption
 from app.models.worldbank_models import WorldBankDataRequest, WorldBankDataResponse, WorldBankMetadataResponse, WorldBankRow
 from app.utils.cache import TTLCache
-from app.utils.retry import RetryableUpstreamError, run_with_retry
 
 
 logger = logging.getLogger(__name__)
@@ -22,8 +21,11 @@ METADATA_TTL_SECONDS = 24 * 60 * 60
 COUNTRIES_PER_PAGE = 1000
 INDICATORS_PER_PAGE = 20000
 DATA_PER_PAGE = 1000
-MAX_CONCURRENT_REQUESTS = 4
-COUNTRY_BATCH_SIZE = 40
+MAX_CONCURRENT_REQUESTS = 2
+COUNTRY_BATCH_SIZE = 20
+MAX_PAGES = 5
+RETRY_DELAYS_SECONDS = (1.0, 2.0, 4.0)
+BATCH_DELAY_SECONDS = 0.2
 
 
 class WorldBankServiceError(Exception):
@@ -81,17 +83,16 @@ class WorldBankService:
                 return cached
 
             logger.info("world bank metadata cache miss")
-            countries_task = self._fetch_paginated_items(
+            countries_records = await self._fetch_paginated_items(
                 "/country",
                 {"format": "json", "per_page": COUNTRIES_PER_PAGE},
                 "world bank countries metadata",
             )
-            indicators_task = self._fetch_paginated_items(
+            indicators_records = await self._fetch_paginated_items(
                 "/indicator",
                 {"format": "json", "per_page": INDICATORS_PER_PAGE},
                 "world bank indicators metadata",
             )
-            countries_records, indicators_records = await asyncio.gather(countries_task, indicators_task)
 
             payload = WorldBankMetadataResponse(
                 countries=self._normalize_countries(countries_records),
@@ -173,21 +174,26 @@ class WorldBankService:
         indicators_by_code: dict[str, MetadataOption],
         date_param: str | None,
     ) -> list[WorldBankRow]:
-        tasks = []
-        for indicator_code in indicators:
-            for country_batch in chunk_values(countries, COUNTRY_BATCH_SIZE):
-                tasks.append(
-                    self._fetch_indicator_rows(
-                        country_batch=country_batch,
-                        indicator_code=indicator_code,
-                        indicator_label=indicators_by_code[indicator_code].label,
-                        country_lookup=countries_by_code,
-                        date_param=date_param,
-                    )
-                )
+        rows: list[WorldBankRow] = []
+        country_batches = chunk_values(countries, COUNTRY_BATCH_SIZE)
 
-        batches = await asyncio.gather(*tasks)
-        return self._dedupe_rows([row for batch in batches for row in batch])
+        for indicator_index, indicator_code in enumerate(indicators):
+            indicator_label = indicators_by_code[indicator_code].label
+
+            for batch_index, country_batch in enumerate(country_batches):
+                batch_rows = await self._fetch_indicator_rows(
+                    country_batch=country_batch,
+                    indicator_code=indicator_code,
+                    indicator_label=indicator_label,
+                    country_lookup=countries_by_code,
+                    date_param=date_param,
+                )
+                rows.extend(batch_rows)
+
+                if self._should_pause_between_batches(indicator_index, batch_index, len(indicators), len(country_batches)):
+                    await asyncio.sleep(BATCH_DELAY_SECONDS)
+
+        return self._dedupe_rows(rows)
 
     async def _fetch_indicator_rows(
         self,
@@ -222,19 +228,31 @@ class WorldBankService:
         first_payload = await self._request_json(path, params, request_label)
         first_metadata, first_items = self._parse_paginated_payload(first_payload)
         total_pages = parse_positive_int(first_metadata.get("pages"), 1)
+        capped_total_pages = min(total_pages, MAX_PAGES)
 
-        records = first_items
-        if total_pages == 1:
+        if total_pages > MAX_PAGES:
+            logger.warning(
+                "world bank page count capped label=%s requested_pages=%s max_pages=%s",
+                request_label,
+                total_pages,
+                MAX_PAGES,
+            )
+
+        records = list(first_items)
+        if capped_total_pages == 1:
             return records
 
-        page_tasks = [
-            self._request_json(path, {**params, "page": page_number}, f"{request_label} page={page_number}")
-            for page_number in range(2, total_pages + 1)
-        ]
-
-        for payload in await asyncio.gather(*page_tasks):
+        for page_number in range(2, capped_total_pages + 1):
+            payload = await self._request_json(
+                path,
+                {**params, "page": page_number},
+                f"{request_label} page={page_number}",
+            )
             _, page_items = self._parse_paginated_payload(payload)
             records.extend(page_items)
+
+            if page_number < capped_total_pages:
+                await asyncio.sleep(BATCH_DELAY_SECONDS)
 
         return records
 
@@ -244,24 +262,82 @@ class WorldBankService:
         params: dict[str, str | int],
         request_label: str,
     ) -> Any:
-        async def operation() -> Any:
-            url = f"{WORLD_BANK_BASE_URL}{path}"
-            started_at = time.perf_counter()
-            logger.info("world bank request started label=%s url=%s params=%s", request_label, url, params)
+        url = f"{WORLD_BANK_BASE_URL}{path}"
+        max_attempts = len(RETRY_DELAYS_SECONDS) + 1
 
-            async with self._request_semaphore:
-                response = await self._client.get(url, params=params)
+        for attempt in range(1, max_attempts + 1):
+            started_at = time.perf_counter()
+            logger.info(
+                "world bank request started label=%s url=%s params=%s attempt=%s/%s",
+                request_label,
+                url,
+                params,
+                attempt,
+                max_attempts,
+            )
+
+            try:
+                async with self._request_semaphore:
+                    response = await self._client.get(url, params=params)
+            except httpx.TimeoutException as exc:
+                elapsed_ms = (time.perf_counter() - started_at) * 1000
+                logger.warning(
+                    "world bank timeout label=%s url=%s params=%s attempt=%s/%s elapsed_ms=%.2f",
+                    request_label,
+                    url,
+                    params,
+                    attempt,
+                    max_attempts,
+                    elapsed_ms,
+                )
+                if await self._sleep_before_retry(request_label, url, params, attempt, "timeout"):
+                    continue
+                raise WorldBankServiceError("The World Bank API timed out while processing the request.", 504, "WORLD_BANK_TIMEOUT") from exc
+            except httpx.NetworkError as exc:
+                elapsed_ms = (time.perf_counter() - started_at) * 1000
+                logger.warning(
+                    "world bank network error label=%s url=%s params=%s attempt=%s/%s elapsed_ms=%.2f error=%s",
+                    request_label,
+                    url,
+                    params,
+                    attempt,
+                    max_attempts,
+                    elapsed_ms,
+                    exc,
+                )
+                if await self._sleep_before_retry(request_label, url, params, attempt, "network error"):
+                    continue
+                raise WorldBankServiceError("Unable to reach the World Bank API right now.", 503, "WORLD_BANK_NETWORK_ERROR") from exc
 
             elapsed_ms = (time.perf_counter() - started_at) * 1000
             logger.info(
-                "world bank response received label=%s status=%s elapsed_ms=%.2f",
+                "world bank response received label=%s status=%s elapsed_ms=%.2f attempt=%s/%s",
                 request_label,
                 response.status_code,
                 elapsed_ms,
+                attempt,
+                max_attempts,
             )
 
+            if response.status_code == 429:
+                if await self._sleep_before_retry(request_label, url, params, attempt, "status 429"):
+                    continue
+                raise WorldBankServiceError(
+                    "The World Bank API is rate limiting requests right now. Please try again shortly.",
+                    503,
+                    "WORLD_BANK_RATE_LIMITED",
+                    details=f"Path {path} returned 429 after retries.",
+                )
+
             if response.status_code >= 500:
-                raise RetryableUpstreamError(f"World Bank API returned status {response.status_code} for {request_label}.")
+                if await self._sleep_before_retry(request_label, url, params, attempt, f"status {response.status_code}"):
+                    continue
+                raise WorldBankServiceError(
+                    "The World Bank API is temporarily unavailable.",
+                    502,
+                    "WORLD_BANK_UPSTREAM_UNAVAILABLE",
+                    details=f"Path {path} returned {response.status_code} after retries.",
+                )
 
             if response.status_code == 404:
                 raise WorldBankServiceError("No data available for this World Bank request.", 404, "NO_DATA")
@@ -271,11 +347,11 @@ class WorldBankService:
                     "The World Bank API rejected the request.",
                     response.status_code,
                     "WORLD_BANK_UPSTREAM_CLIENT_ERROR",
-                    details=f"Path {path} returned {response.status_code}.",
+                    details=self._build_client_error_details(response, path),
                 )
 
             try:
-                payload = response.json()
+                return response.json()
             except ValueError as exc:
                 raise WorldBankServiceError(
                     "The World Bank API returned invalid JSON.",
@@ -284,22 +360,37 @@ class WorldBankService:
                     str(exc),
                 ) from exc
 
-            return payload
+        raise RuntimeError("World Bank retry loop exited unexpectedly.")
 
-        try:
-            return await run_with_retry(request_label, operation)
-        except WorldBankServiceError:
-            raise
-        except httpx.TimeoutException as exc:
-            raise WorldBankServiceError("The World Bank API timed out while processing the request.", 504, "WORLD_BANK_TIMEOUT") from exc
-        except httpx.NetworkError as exc:
-            raise WorldBankServiceError("Unable to reach the World Bank API right now.", 503, "WORLD_BANK_NETWORK_ERROR") from exc
-        except RetryableUpstreamError as exc:
-            raise WorldBankServiceError(
-                "The World Bank API is temporarily unavailable.",
-                502,
-                "WORLD_BANK_UPSTREAM_UNAVAILABLE",
-            ) from exc
+    async def _sleep_before_retry(
+        self,
+        request_label: str,
+        url: str,
+        params: dict[str, str | int],
+        attempt: int,
+        reason: str,
+    ) -> bool:
+        if attempt > len(RETRY_DELAYS_SECONDS):
+            return False
+
+        delay_seconds = RETRY_DELAYS_SECONDS[attempt - 1]
+        logger.warning(
+            "WorldBank retry %s for %s params=%s reason=%s delay=%.1fs label=%s",
+            attempt,
+            url,
+            params,
+            reason,
+            delay_seconds,
+            request_label,
+        )
+        await asyncio.sleep(delay_seconds)
+        return True
+
+    def _build_client_error_details(self, response: httpx.Response, path: str) -> str:
+        response_text = sanitize_text(response.text)
+        if response_text:
+            return f"Path {path} returned {response.status_code}: {response_text[:200]}"
+        return f"Path {path} returned {response.status_code}."
 
     def _parse_paginated_payload(self, payload: Any) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         if not isinstance(payload, list) or len(payload) < 2:
@@ -426,15 +517,11 @@ class WorldBankService:
             indicators_by_code=indicators_by_code,
             date_param=f"{target_start_year}:{current_year}",
         )
-        grouped_rows: dict[tuple[str, str], list[WorldBankRow]] = {}
-
-        for row in requested_window_rows:
-            grouped_rows.setdefault((row.country, row.indicator), []).append(row)
+        grouped_rows = self._group_rows_by_pair(requested_window_rows)
 
         selected_rows: list[WorldBankRow] = []
         warnings: list[str] = []
-        fallback_tasks = []
-        fallback_pairs: list[tuple[str, str]] = []
+        fallback_requests_by_indicator: dict[str, list[str]] = {}
 
         for country_code in request.countries:
             country_label = countries_by_code[country_code].label
@@ -447,43 +534,64 @@ class WorldBankService:
                     selected_rows.extend(pair_rows[-latest_years:])
                     continue
 
-                fallback_pairs.append(pair)
-                fallback_tasks.append(
-                    self._fetch_indicator_rows(
-                        country_batch=[country_code],
-                        indicator_code=indicator_code,
-                        indicator_label=indicator_label,
-                        country_lookup=countries_by_code,
-                        date_param=None,
-                    )
-                )
+                fallback_requests_by_indicator.setdefault(indicator_code, []).append(country_code)
 
-        fallback_batches = await asyncio.gather(*fallback_tasks)
-
-        for pair, fallback_rows in zip(fallback_pairs, fallback_batches):
-            pair_rows = sorted(fallback_rows, key=lambda row: row.year)
-            if not pair_rows:
-                warnings.append(
-                    f"{pair[0]} / {pair[1]}: data is not available for the latest {latest_years} years, and no historical values were found."
-                )
+        for indicator_index, indicator_code in enumerate(request.indicators):
+            fallback_country_codes = fallback_requests_by_indicator.get(indicator_code, [])
+            if not fallback_country_codes:
                 continue
 
-            fallback_rows = pair_rows[-min(latest_years, len(pair_rows)) :]
-            selected_rows.extend(fallback_rows)
-            start_year = fallback_rows[0].year
-            end_year = fallback_rows[-1].year
+            indicator_label = indicators_by_code[indicator_code].label
+            fallback_batches = chunk_values(fallback_country_codes, COUNTRY_BATCH_SIZE)
 
-            if len(fallback_rows) < latest_years:
-                warnings.append(
-                    f"{pair[0]} / {pair[1]}: data is not available for the latest {latest_years} years. Exporting {len(fallback_rows)} available years instead ({start_year}-{end_year})."
+            for batch_index, country_batch in enumerate(fallback_batches):
+                fallback_rows = await self._fetch_indicator_rows(
+                    country_batch=country_batch,
+                    indicator_code=indicator_code,
+                    indicator_label=indicator_label,
+                    country_lookup=countries_by_code,
+                    date_param=None,
                 )
-            else:
-                warnings.append(
-                    f"{pair[0]} / {pair[1]}: data is not available for the latest {latest_years} years. Exporting the last {latest_years} available years instead ({start_year}-{end_year})."
-                )
+                fallback_grouped_rows = self._group_rows_by_pair(fallback_rows)
+
+                for country_code in country_batch:
+                    country_label = countries_by_code[country_code].label
+                    pair = (country_label, indicator_label)
+                    pair_rows = sorted(fallback_grouped_rows.get(pair, []), key=lambda row: row.year)
+
+                    if not pair_rows:
+                        warnings.append(
+                            f"{pair[0]} / {pair[1]}: data is not available for the latest {latest_years} years, and no historical values were found."
+                        )
+                        continue
+
+                    selected_pair_rows = pair_rows[-min(latest_years, len(pair_rows)) :]
+                    selected_rows.extend(selected_pair_rows)
+                    start_year = selected_pair_rows[0].year
+                    end_year = selected_pair_rows[-1].year
+
+                    if len(selected_pair_rows) < latest_years:
+                        warnings.append(
+                            f"{pair[0]} / {pair[1]}: data is not available for the latest {latest_years} years. Exporting {len(selected_pair_rows)} available years instead ({start_year}-{end_year})."
+                        )
+                    else:
+                        warnings.append(
+                            f"{pair[0]} / {pair[1]}: data is not available for the latest {latest_years} years. Exporting the last {latest_years} available years instead ({start_year}-{end_year})."
+                        )
+
+                if self._should_pause_between_batches(indicator_index, batch_index, len(request.indicators), len(fallback_batches)):
+                    await asyncio.sleep(BATCH_DELAY_SECONDS)
 
         selected_rows.sort(key=lambda row: (row.country.casefold(), row.indicator.casefold(), row.year))
-        return selected_rows, warnings
+        return self._dedupe_rows(selected_rows), warnings
+
+    def _group_rows_by_pair(self, rows: list[WorldBankRow]) -> dict[tuple[str, str], list[WorldBankRow]]:
+        grouped_rows: dict[tuple[str, str], list[WorldBankRow]] = {}
+
+        for row in rows:
+            grouped_rows.setdefault((row.country, row.indicator), []).append(row)
+
+        return grouped_rows
 
     def _dedupe_rows(self, rows: list[WorldBankRow]) -> list[WorldBankRow]:
         deduped_rows: list[WorldBankRow] = []
@@ -511,6 +619,15 @@ class WorldBankService:
                 warnings.append(f"{country_label} / {indicator_label}: no data was returned for the selected range.")
 
         return warnings
+
+    def _should_pause_between_batches(
+        self,
+        indicator_index: int,
+        batch_index: int,
+        indicator_count: int,
+        batch_count: int,
+    ) -> bool:
+        return indicator_index < indicator_count - 1 or batch_index < batch_count - 1
 
     def _utc_now(self) -> str:
         return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
