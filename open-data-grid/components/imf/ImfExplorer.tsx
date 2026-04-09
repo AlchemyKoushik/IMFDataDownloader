@@ -166,12 +166,12 @@ export function ImfExplorer() {
         <div className="appBootstrapContent">
           <ExplorerPageShell
             description="Search the live IMF catalog, fetch time-series data through a dedicated FastAPI backend, and download a clean Excel export without proxy-related failures."
-            eyebrow="Powered by IMF API"
             stats={[
               { label: "Countries / regions", value: metadata?.countries.length ?? "..." },
               { label: "Indicators", value: metadata?.indicators.length ?? "..." },
             ]}
-            title="IMF World Economic Outlook Data."
+            subheading="powered by Alchemy Research & Analytics"
+            title="Open Data Grid"
           >
             <form className="panelForm" onSubmit={handleSubmit}>
               <div className="catalogNote">

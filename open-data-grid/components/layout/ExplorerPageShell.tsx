@@ -8,19 +8,19 @@ interface StatItem {
 interface ExplorerPageShellProps {
   children: ReactNode;
   description: string;
-  eyebrow: string;
   stats: StatItem[];
+  subheading: string;
   title: string;
 }
 
-export function ExplorerPageShell({ children, description, eyebrow, stats, title }: ExplorerPageShellProps) {
+export function ExplorerPageShell({ children, description, stats, subheading, title }: ExplorerPageShellProps) {
   return (
     <main className="pageShell">
       <section className="heroPanel">
         <div className="heroCopy">
-          <span className="eyebrow">{eyebrow}</span>
           <h1>{title}</h1>
-          <p>{description}</p>
+          <p className="heroSubheading">{subheading}</p>
+          <p className="heroDescription">{description}</p>
 
           <div className="statsRow" aria-label="Catalog statistics">
             {stats.map((stat) => (

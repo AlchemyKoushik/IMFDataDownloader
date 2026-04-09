@@ -15,7 +15,7 @@ export function FloatingNav() {
   return (
     <div className="floatingNavWrap">
       <nav className="floatingNav" aria-label="Primary">
-        <div className="brandLockup" aria-label="Alchemy's Open Data Grid">
+        <div className="brandLockup" aria-label="Open Data Grid, powered by Alchemy Research & Analytics">
           <span className="brandMark" aria-hidden="true">
             <Image
               alt=""
@@ -26,7 +26,10 @@ export function FloatingNav() {
               width={52}
             />
           </span>
-          <span className="brandText">Alchemy's Open Data Grid</span>
+          <span className="brandText">
+            <span className="brandTitle">Open Data Grid</span>
+            <span className="brandSubtitle">powered by Alchemy Research &amp; Analytics</span>
+          </span>
         </div>
 
         <div className="navActions">

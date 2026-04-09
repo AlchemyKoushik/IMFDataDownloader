@@ -143,12 +143,12 @@ export function WorldBankExplorer() {
         <div className="appBootstrapContent">
           <ExplorerPageShell
             description="Search the full World Bank catalog, combine multiple countries and indicators, normalize paginated API results, and export a clean Excel workbook from the same FastAPI backend."
-            eyebrow="Powered by World Bank API"
             stats={[
               { label: "Countries", value: metadata?.countries.length ?? "..." },
               { label: "Indicators", value: metadata?.indicators.length ?? "..." },
             ]}
-            title="World Bank Open Data."
+            subheading="powered by Alchemy Research & Analytics"
+            title="Open Data Grid"
           >
             <form className="panelForm" onSubmit={handleSubmit}>
               <div className="catalogNote">
