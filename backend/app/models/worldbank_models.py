@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
-from app.models.request_models import MetadataOption
+from app.models.request_models import DateFilterRequest, MetadataOption
 
 
 def _normalize_country_code(value: str) -> str:
@@ -19,12 +19,9 @@ def _normalize_indicator_code(value: str) -> str:
     return normalized
 
 
-class WorldBankDataRequest(BaseModel):
+class WorldBankDataRequest(DateFilterRequest):
     countries: list[str] = Field(..., min_length=1)
     indicators: list[str] = Field(..., min_length=1)
-    latest_years: int | None = Field(default=None, alias="latestYears", ge=1)
-    start_year: int | None = Field(default=None, alias="startYear", ge=1900)
-    end_year: int | None = Field(default=None, alias="endYear", ge=1900)
 
     @field_validator("countries", mode="before")
     @classmethod
@@ -64,19 +61,6 @@ class WorldBankDataRequest(BaseModel):
                 normalized.append(indicator_code)
         return normalized
 
-    @model_validator(mode="after")
-    def validate_year_range(self) -> "WorldBankDataRequest":
-        if self.latest_years is not None and (self.start_year is not None or self.end_year is not None):
-            raise ValueError("Provide either latestYears or startYear/endYear, not both")
-
-        if (self.start_year is None) != (self.end_year is None):
-            raise ValueError("startYear and endYear must be provided together")
-
-        if self.start_year is not None and self.end_year is not None and self.start_year > self.end_year:
-            raise ValueError("startYear must be less than or equal to endYear")
-
-        return self
-
     model_config = ConfigDict(populate_by_name=True)
 
 
@@ -84,7 +68,7 @@ class WorldBankRow(BaseModel):
     country: str
     indicator: str
     year: int
-    value: float
+    value: float | None = None
 
 
 class WorldBankMetadataResponse(BaseModel):

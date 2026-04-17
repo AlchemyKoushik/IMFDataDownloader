@@ -3,6 +3,7 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
+from app.models.request_models import AvailableYearRangeResponse
 from app.models.worldbank_models import WorldBankDataRequest, WorldBankDataResponse, WorldBankMetadataResponse
 from app.services.worldbank_service import WorldBankService
 from app.utils.excel import build_world_bank_workbook
@@ -26,6 +27,13 @@ async def get_metadata(request: Request):
 async def get_data(payload: WorldBankDataRequest, request: Request):
     service = get_worldbank_service(request)
     response = await service.get_data(payload)
+    return response.model_dump(by_alias=True)
+
+
+@router.post("/range", response_model=AvailableYearRangeResponse)
+async def get_year_range(payload: WorldBankDataRequest, request: Request):
+    service = get_worldbank_service(request)
+    response = await service.get_selection_year_range(payload)
     return response.model_dump(by_alias=True)
 
 

@@ -24,7 +24,7 @@ def _log_before_sleep(request_label: str) -> Callable[[RetryCallState], None]:
     def _log(retry_state: RetryCallState) -> None:
         error = retry_state.outcome.exception() if retry_state.outcome else None
         logger.warning(
-            "retrying imf request label=%s attempt=%s error=%s",
+            "retrying upstream request label=%s attempt=%s error=%s",
             request_label,
             retry_state.attempt_number,
             error,

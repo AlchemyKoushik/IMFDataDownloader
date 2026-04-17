@@ -116,8 +116,12 @@ export function getFriendlyErrorMessage(sourceLabel: string, errorCode: string, 
       return "One of the selected countries could not be found.";
     case "INDICATOR_NOT_FOUND":
       return "One of the selected indicators could not be found.";
+    case "SERIES_NOT_FOUND":
+      return "One of the selected FRED series could not be found.";
     case "INVALID_DATASET_COUNTRY":
       return "One of the selected indicators is not available for the chosen country.";
+    case "FRED_API_KEY_MISSING":
+      return "The FRED integration is not configured on the backend yet.";
     case "BACKEND_UNREACHABLE":
       return "We couldn't connect to the data service right now. Please try again.";
     default:

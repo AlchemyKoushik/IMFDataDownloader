@@ -6,11 +6,15 @@ from typing import Sequence
 import pandas as pd
 from openpyxl.utils import get_column_letter
 
+from app.models.fred_models import FredSeriesRow
 from app.models.request_models import GridObservation, Observation
 from app.models.worldbank_models import WorldBankRow
 
 
-def _measure_width(values: Sequence[str | int | float]) -> int:
+ExcelCellValue = str | int | float | None
+
+
+def _measure_width(values: Sequence[ExcelCellValue]) -> int:
     return min(max(max(len(str(value)) for value in values), 12) + 2, 42)
 
 
@@ -24,13 +28,55 @@ def _sanitize_file_segment(value: str) -> str:
     return "_".join(" ".join("".join(sanitized).split()).split())
 
 
+def _normalize_excel_value(value: ExcelCellValue) -> str | int | float:
+    if value in (None, ""):
+        return ""
+    return value
+
+
+def _build_flat_workbook(
+    *,
+    records: list[dict[str, ExcelCellValue]],
+    columns: Sequence[str],
+    file_name: str,
+    sheet_name: str,
+) -> tuple[BytesIO, str]:
+    if not records:
+        raise ValueError("No data available.")
+
+    normalized_records = [{column: _normalize_excel_value(record.get(column)) for column in columns} for record in records]
+    buffer = BytesIO()
+    dataframe = pd.DataFrame(normalized_records, columns=list(columns))
+
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        dataframe.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        worksheet = writer.sheets[sheet_name]
+        worksheet.freeze_panes = "A2"
+        worksheet.auto_filter.ref = f"A1:{get_column_letter(len(columns))}{len(normalized_records) + 1}"
+
+        for column_index, column_name in enumerate(columns, start=1):
+            worksheet.column_dimensions[get_column_letter(column_index)].width = _measure_width(
+                [column_name, *[record[column_name] for record in normalized_records]]
+            )
+
+    buffer.seek(0)
+    return buffer, file_name
+
+
 def build_excel_workbook(country: str, indicator: str, observations: Sequence[Observation]) -> tuple[BytesIO, str]:
     if not observations:
         raise ValueError("No data available.")
 
     buffer = BytesIO()
-    rows = [{"Year": observation.year, "Value": observation.value} for observation in observations]
-    dataframe = pd.DataFrame(rows)
+    rows = [
+        {
+            "Year": observation.year,
+            "Value": _normalize_excel_value(observation.value),
+        }
+        for observation in sorted(observations, key=lambda row: row.year)
+    ]
+    dataframe = pd.DataFrame(rows, columns=["Year", "Value"])
 
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         metadata_frame = pd.DataFrame([["Country", country], ["Indicator", indicator]])
@@ -49,10 +95,6 @@ def build_excel_workbook(country: str, indicator: str, observations: Sequence[Ob
 
 
 def build_imf_grid_workbook(rows: Sequence[GridObservation]) -> tuple[BytesIO, str]:
-    if not rows:
-        raise ValueError("No data available.")
-
-    buffer = BytesIO()
     records = [
         {
             "Country": row.country,
@@ -60,39 +102,17 @@ def build_imf_grid_workbook(rows: Sequence[GridObservation]) -> tuple[BytesIO, s
             "Year": row.year,
             "Value": row.value,
         }
-        for row in rows
+        for row in sorted(rows, key=lambda item: (item.country.casefold(), item.indicator.casefold(), item.year))
     ]
-    dataframe = pd.DataFrame(records, columns=["Country", "Indicator", "Year", "Value"])
-
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        dataframe.to_excel(writer, sheet_name="IMF Data", index=False)
-
-        worksheet = writer.sheets["IMF Data"]
-        worksheet.freeze_panes = "A2"
-        worksheet.auto_filter.ref = f"A1:D{len(records) + 1}"
-        worksheet.column_dimensions[get_column_letter(1)].width = _measure_width(
-            ["Country", *[entry["Country"] for entry in records]]
-        )
-        worksheet.column_dimensions[get_column_letter(2)].width = _measure_width(
-            ["Indicator", *[entry["Indicator"] for entry in records]]
-        )
-        worksheet.column_dimensions[get_column_letter(3)].width = _measure_width(
-            ["Year", *[entry["Year"] for entry in records]]
-        )
-        worksheet.column_dimensions[get_column_letter(4)].width = _measure_width(
-            ["Value", *[entry["Value"] for entry in records]]
-        )
-
-    buffer.seek(0)
-    file_name = f"imf_data_grid_{pd.Timestamp.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    return buffer, file_name
+    return _build_flat_workbook(
+        records=records,
+        columns=["Country", "Indicator", "Year", "Value"],
+        file_name=f"imf_data_grid_{pd.Timestamp.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx",
+        sheet_name="IMF Data",
+    )
 
 
 def build_world_bank_workbook(rows: Sequence[WorldBankRow]) -> tuple[BytesIO, str]:
-    if not rows:
-        raise ValueError("No data available.")
-
-    buffer = BytesIO()
     records = [
         {
             "Country": row.country,
@@ -100,29 +120,29 @@ def build_world_bank_workbook(rows: Sequence[WorldBankRow]) -> tuple[BytesIO, st
             "Year": row.year,
             "Value": row.value,
         }
-        for row in rows
+        for row in sorted(rows, key=lambda item: (item.country.casefold(), item.indicator.casefold(), item.year))
     ]
-    dataframe = pd.DataFrame(records, columns=["Country", "Indicator", "Year", "Value"])
+    return _build_flat_workbook(
+        records=records,
+        columns=["Country", "Indicator", "Year", "Value"],
+        file_name=f"world_bank_data_{pd.Timestamp.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx",
+        sheet_name="World Bank Data",
+    )
 
-    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
-        dataframe.to_excel(writer, sheet_name="World Bank Data", index=False)
 
-        worksheet = writer.sheets["World Bank Data"]
-        worksheet.freeze_panes = "A2"
-        worksheet.auto_filter.ref = f"A1:D{len(records) + 1}"
-        worksheet.column_dimensions[get_column_letter(1)].width = _measure_width(
-            ["Country", *[entry["Country"] for entry in records]]
-        )
-        worksheet.column_dimensions[get_column_letter(2)].width = _measure_width(
-            ["Indicator", *[entry["Indicator"] for entry in records]]
-        )
-        worksheet.column_dimensions[get_column_letter(3)].width = _measure_width(
-            ["Year", *[entry["Year"] for entry in records]]
-        )
-        worksheet.column_dimensions[get_column_letter(4)].width = _measure_width(
-            ["Value", *[entry["Value"] for entry in records]]
-        )
-
-    buffer.seek(0)
-    file_name = f"world_bank_data_{pd.Timestamp.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    return buffer, file_name
+def build_fred_workbook(rows: Sequence[FredSeriesRow]) -> tuple[BytesIO, str]:
+    records = [
+        {
+            "Series ID": row.series_id,
+            "Title": row.title,
+            "Year": row.date,
+            "Value": row.value,
+        }
+        for row in sorted(rows, key=lambda item: (item.title.casefold(), item.series_id.casefold(), int(item.date)))
+    ]
+    return _build_flat_workbook(
+        records=records,
+        columns=["Series ID", "Title", "Year", "Value"],
+        file_name=f"fred_data_{pd.Timestamp.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx",
+        sheet_name="FRED Data",
+    )

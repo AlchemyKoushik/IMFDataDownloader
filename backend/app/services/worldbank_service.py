@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 
-from app.models.request_models import MetadataOption
+from app.models.request_models import AvailableYearRangeResponse, MetadataOption
 from app.models.worldbank_models import WorldBankDataRequest, WorldBankDataResponse, WorldBankMetadataResponse, WorldBankRow
 from app.utils.cache import TTLCache
 
@@ -104,44 +104,36 @@ class WorldBankService:
 
     async def get_data(self, request: WorldBankDataRequest) -> WorldBankDataResponse:
         metadata = await self.get_metadata()
-        countries_by_code = {option.value: option for option in metadata.countries}
-        indicators_by_code = {option.value: option for option in metadata.indicators}
+        countries_by_code, indicators_by_code = self._validate_selection(metadata, request)
 
-        missing_countries = [code for code in request.countries if code not in countries_by_code]
-        if missing_countries:
-            raise WorldBankServiceError(
-                "One or more selected countries are not available in the World Bank catalog.",
-                400,
-                "COUNTRY_NOT_FOUND",
-                details=", ".join(missing_countries),
-            )
-
-        missing_indicators = [code for code in request.indicators if code not in indicators_by_code]
-        if missing_indicators:
-            raise WorldBankServiceError(
-                "One or more selected indicators are not available in the World Bank catalog.",
-                400,
-                "INDICATOR_NOT_FOUND",
-                details=", ".join(missing_indicators),
-            )
-
-        if request.latest_years is not None:
+        if request.uses_preset_range():
             rows, warnings = await self._get_latest_years_rows(
                 request=request,
                 countries_by_code=countries_by_code,
                 indicators_by_code=indicators_by_code,
             )
-        else:
-            date_param = None
-            if request.start_year is not None and request.end_year is not None:
-                date_param = f"{request.start_year}:{request.end_year}"
-
+        elif request.uses_custom_range():
             raw_rows = await self._fetch_selection_rows(
                 countries=request.countries,
                 indicators=request.indicators,
                 countries_by_code=countries_by_code,
                 indicators_by_code=indicators_by_code,
-                date_param=date_param,
+                date_param=f"{request.start_year}:{request.end_year}",
+            )
+            expected_pairs = [
+                (countries_by_code[country_code].label, indicators_by_code[indicator_code].label)
+                for country_code in request.countries
+                for indicator_code in request.indicators
+            ]
+            rows = self._expand_rows_for_custom_range(raw_rows, expected_pairs, request.start_year or 1900, request.end_year or 1900)
+            warnings = self._build_custom_range_warnings(rows, expected_pairs)
+        else:
+            raw_rows = await self._fetch_selection_rows(
+                countries=request.countries,
+                indicators=request.indicators,
+                countries_by_code=countries_by_code,
+                indicators_by_code=indicators_by_code,
+                date_param=None,
             )
             expected_pairs = [
                 (countries_by_code[country_code].label, indicators_by_code[indicator_code].label)
@@ -151,7 +143,10 @@ class WorldBankService:
             rows = sorted(raw_rows, key=lambda row: (row.country.casefold(), row.indicator.casefold(), row.year))
             warnings = self._build_missing_pair_warnings(rows, expected_pairs)
 
-        if not rows:
+        has_any_values = any(row.value is not None for row in rows)
+        includes_future_years = bool(request.uses_custom_range() and (request.end_year or 0) > time.gmtime().tm_year)
+
+        if not rows or (not has_any_values and not includes_future_years):
             raise WorldBankServiceError(
                 "No World Bank data is available for the selected countries, indicators, and range filter.",
                 404,
@@ -162,6 +157,31 @@ class WorldBankService:
             rows=rows,
             totalRows=len(rows),
             warnings=warnings,
+            lastUpdated=self._utc_now(),
+        )
+
+    async def get_selection_year_range(self, request: WorldBankDataRequest) -> AvailableYearRangeResponse:
+        metadata = await self.get_metadata()
+        countries_by_code, indicators_by_code = self._validate_selection(metadata, request)
+        rows = await self._fetch_selection_rows(
+            countries=request.countries,
+            indicators=request.indicators,
+            countries_by_code=countries_by_code,
+            indicators_by_code=indicators_by_code,
+            date_param=None,
+        )
+
+        available_years = sorted({row.year for row in rows if row.value is not None})
+        if not available_years:
+            raise WorldBankServiceError(
+                "No World Bank data is available for the selected countries and indicators.",
+                404,
+                "NO_DATA",
+            )
+
+        return AvailableYearRangeResponse(
+            startYear=available_years[0],
+            endYear=available_years[-1],
             lastUpdated=self._utc_now(),
         )
 
@@ -500,6 +520,34 @@ class WorldBankService:
 
         return rows
 
+    def _validate_selection(
+        self,
+        metadata: WorldBankMetadataResponse,
+        request: WorldBankDataRequest,
+    ) -> tuple[dict[str, MetadataOption], dict[str, MetadataOption]]:
+        countries_by_code = {option.value: option for option in metadata.countries}
+        indicators_by_code = {option.value: option for option in metadata.indicators}
+
+        missing_countries = [code for code in request.countries if code not in countries_by_code]
+        if missing_countries:
+            raise WorldBankServiceError(
+                "One or more selected countries are not available in the World Bank catalog.",
+                400,
+                "COUNTRY_NOT_FOUND",
+                details=", ".join(missing_countries),
+            )
+
+        missing_indicators = [code for code in request.indicators if code not in indicators_by_code]
+        if missing_indicators:
+            raise WorldBankServiceError(
+                "One or more selected indicators are not available in the World Bank catalog.",
+                400,
+                "INDICATOR_NOT_FOUND",
+                details=", ".join(missing_indicators),
+            )
+
+        return countries_by_code, indicators_by_code
+
     async def _get_latest_years_rows(
         self,
         *,
@@ -507,7 +555,7 @@ class WorldBankService:
         countries_by_code: dict[str, MetadataOption],
         indicators_by_code: dict[str, MetadataOption],
     ) -> tuple[list[WorldBankRow], list[str]]:
-        latest_years = request.latest_years or 1
+        latest_years = request.years or 1
         current_year = time.gmtime().tm_year
         target_start_year = current_year - latest_years + 1
         requested_window_rows = await self._fetch_selection_rows(
@@ -605,6 +653,58 @@ class WorldBankService:
             deduped_rows.append(row)
 
         return deduped_rows
+
+    def _expand_rows_for_custom_range(
+        self,
+        rows: list[WorldBankRow],
+        expected_pairs: list[tuple[str, str]],
+        start_year: int,
+        end_year: int,
+    ) -> list[WorldBankRow]:
+        grouped_rows = self._group_rows_by_pair(rows)
+        expanded_rows: list[WorldBankRow] = []
+
+        for country_label, indicator_label in expected_pairs:
+            pair_rows = grouped_rows.get((country_label, indicator_label), [])
+            rows_by_year = {row.year: row for row in pair_rows}
+
+            for year in range(start_year, end_year + 1):
+                expanded_rows.append(
+                    rows_by_year.get(
+                        year,
+                        WorldBankRow(
+                            country=country_label,
+                            indicator=indicator_label,
+                            year=year,
+                            value=None,
+                        ),
+                    )
+                )
+
+        expanded_rows.sort(key=lambda row: (row.country.casefold(), row.indicator.casefold(), row.year))
+        return self._dedupe_rows(expanded_rows)
+
+    def _build_custom_range_warnings(
+        self,
+        rows: list[WorldBankRow],
+        expected_pairs: list[tuple[str, str]],
+    ) -> list[str]:
+        grouped_rows = self._group_rows_by_pair(rows)
+        warnings: list[str] = []
+
+        for country_label, indicator_label in expected_pairs:
+            pair_rows = grouped_rows.get((country_label, indicator_label), [])
+
+            if not pair_rows or not any(row.value is not None for row in pair_rows):
+                warnings.append(f"{country_label} / {indicator_label}: no data was returned for the selected range.")
+                continue
+
+            if any(row.value is None for row in pair_rows):
+                warnings.append(
+                    f"{country_label} / {indicator_label}: some years in the selected range did not return values and were left blank."
+                )
+
+        return warnings
 
     def _build_missing_pair_warnings(
         self,

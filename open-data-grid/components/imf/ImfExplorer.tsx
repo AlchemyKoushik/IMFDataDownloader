@@ -1,13 +1,13 @@
 "use client";
 
 import type { FormEvent } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
+import { DateToggle } from "@/components/DateToggle";
 import { LoadingScreen } from "@/components/LoadingScreen";
 import { ExplorerPageShell } from "@/components/layout/ExplorerPageShell";
 import { ActionButton } from "@/components/ui/ActionButton";
 import { SearchableDropdown } from "@/components/ui/SearchableDropdown";
-import { SelectDropdown } from "@/components/ui/SelectDropdown";
 import { SelectionSummaryCard } from "@/components/ui/SelectionSummaryCard";
 import { type NoticeTone, StatusNotice } from "@/components/ui/StatusNotice";
 import { useCatalogBootstrap } from "@/hooks/useCatalogBootstrap";
@@ -15,10 +15,12 @@ import {
   BackendClientError,
   downloadBulkSeriesExcel,
   fetchBulkSeriesData,
+  fetchBulkSeriesRange,
   fetchMetadata,
   getApiBaseUrl,
   primeMetadataCache,
 } from "@/lib/backendClient";
+import { createInitialDateFilter, getDateFilterSummary, syncDateFilterWithAvailableRange, toDateFilterPayload } from "@/lib/dateFilters";
 import { REGION_SPECIFIC_DATASET_HINT, isIndicatorAvailableForAnyCountry } from "@/lib/datasetValidation";
 import {
   buildDownloadSuccessMessage,
@@ -26,6 +28,7 @@ import {
   getFriendlyErrorMessage,
   getLoadingScreenMessages,
 } from "@/lib/noticeMessages";
+import type { AvailableYearRangePayload } from "@/types/dateFilter";
 import type { IndicatorOption, MetadataResponsePayload, SelectOption } from "@/types/imf";
 
 const MIN_COUNTRY_COUNT = 200;
@@ -33,12 +36,6 @@ const MIN_INDICATOR_COUNT = 100;
 const SOURCE_LABEL = "IMF";
 const EXPLORER_MESSAGES = getExplorerNoticeMessages(SOURCE_LABEL);
 const LOADING_MESSAGES = getLoadingScreenMessages(SOURCE_LABEL);
-
-const LATEST_YEAR_OPTIONS = [
-  { label: "Latest 5 Years", value: "5" },
-  { label: "Latest 10 Years", value: "10" },
-  { label: "Latest 20 Years", value: "20" },
-];
 
 const joinLabels = (options: SelectOption[], limit = 3): string =>
   options
@@ -51,10 +48,13 @@ export function ImfExplorer() {
   const [selectedIndicators, setSelectedIndicators] = useState<string[]>([]);
   const [countryQuery, setCountryQuery] = useState("");
   const [indicatorQuery, setIndicatorQuery] = useState("");
-  const [selectedLatestYears, setSelectedLatestYears] = useState("10");
+  const [dateFilter, setDateFilter] = useState(() => createInitialDateFilter());
+  const [availableRange, setAvailableRange] = useState<AvailableYearRangePayload | null>(null);
+  const [isRangeLoading, setIsRangeLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [noticeTone, setNoticeTone] = useState<NoticeTone>("idle");
   const [noticeMessage, setNoticeMessage] = useState(EXPLORER_MESSAGES.initial);
+  const availableRangeRef = useRef<AvailableYearRangePayload | null>(null);
 
   const {
     canRetryManually,
@@ -99,7 +99,6 @@ export function ImfExplorer() {
       setSelectedIndicators(nextSelectedIndicators);
       setNoticeTone("idle");
       setNoticeMessage(EXPLORER_MESSAGES.filteredIndicators);
-      return;
     }
   }, [countryCompatibleIndicators, selectedIndicators]);
 
@@ -111,6 +110,64 @@ export function ImfExplorer() {
     setNoticeTone("idle");
     setNoticeMessage(EXPLORER_MESSAGES.metadataLoaded(metadata.countries.length, metadata.indicators.length));
   }, [metadata]);
+
+  useEffect(() => {
+    if (!selectedCountries.length || !selectedIndicators.length) {
+      availableRangeRef.current = null;
+      setAvailableRange(null);
+      setIsRangeLoading(false);
+      return;
+    }
+
+    let isCancelled = false;
+    const controller = new AbortController();
+
+    setIsRangeLoading(true);
+
+    void fetchBulkSeriesRange(
+      {
+        countries: selectedCountries,
+        indicators: selectedIndicators,
+      },
+      controller.signal,
+    )
+      .then((nextRange) => {
+        if (isCancelled || controller.signal.aborted) {
+          return;
+        }
+
+        const previousRange = availableRangeRef.current;
+        availableRangeRef.current = nextRange;
+        setAvailableRange(nextRange);
+        setDateFilter((current) => syncDateFilterWithAvailableRange(current, previousRange, nextRange));
+      })
+      .catch((error) => {
+        if (isCancelled || controller.signal.aborted) {
+          return;
+        }
+
+        availableRangeRef.current = null;
+        setAvailableRange(null);
+
+        if (error instanceof BackendClientError) {
+          setNoticeTone(error.code === "NO_DATA" || error.code === "NO_DATA_AFTER_FALLBACK" ? "empty" : "error");
+          setNoticeMessage(getFriendlyErrorMessage(SOURCE_LABEL, error.code, error.message));
+        } else {
+          setNoticeTone("error");
+          setNoticeMessage(EXPLORER_MESSAGES.genericError);
+        }
+      })
+      .finally(() => {
+        if (!isCancelled) {
+          setIsRangeLoading(false);
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+      controller.abort();
+    };
+  }, [selectedCountries, selectedIndicators]);
 
   const selectedCountryOptions = countries.filter((option) => selectedCountries.includes(option.value));
   const selectedIndicatorOptions = countryCompatibleIndicators.filter((option) => selectedIndicators.includes(option.value));
@@ -124,6 +181,12 @@ export function ImfExplorer() {
       return;
     }
 
+    if (!availableRange) {
+      setNoticeTone("error");
+      setNoticeMessage("Please wait for the available year range to finish loading.");
+      return;
+    }
+
     setIsLoading(true);
     setNoticeTone("idle");
     setNoticeMessage(EXPLORER_MESSAGES.gettingData);
@@ -132,7 +195,7 @@ export function ImfExplorer() {
       const payload = {
         countries: selectedCountries,
         indicators: selectedIndicators,
-        latestYears: Number(selectedLatestYears),
+        ...toDateFilterPayload(dateFilter),
       };
 
       const result = await fetchBulkSeriesData(payload);
@@ -165,7 +228,7 @@ export function ImfExplorer() {
       {isAppReady ? (
         <div className="appBootstrapContent">
           <ExplorerPageShell
-            description="Search the live IMF catalog, fetch time-series data through a dedicated FastAPI backend, and download a clean Excel export without proxy-related failures."
+            description="Search the live IMF catalog, keep region-specific datasets compatible with your country mix, use a selection-aware year range, and export a clean Excel workbook through the FastAPI backend."
             stats={[
               { label: "Countries / regions", value: metadata?.countries.length ?? "..." },
               { label: "Indicators", value: metadata?.indicators.length ?? "..." },
@@ -177,9 +240,8 @@ export function ImfExplorer() {
               <div className="catalogNote">
                 <strong>Live IMF catalog</strong>
                 <span>
-                  Type to search, arrows to navigate, Enter to select. Export 5/10/20 years with auto-fallback.
-                  {" "}
-                  {REGION_SPECIFIC_DATASET_HINT}
+                  Type to search, move with the keyboard, and let the year range update from your selected countries and
+                  indicators. {REGION_SPECIFIC_DATASET_HINT}
                 </span>
               </div>
 
@@ -204,7 +266,7 @@ export function ImfExplorer() {
                 extraText={(option: IndicatorOption) =>
                   [option.unit, option.dataset, option.source].filter(Boolean).join(" | ")
                 }
-                helperText="Search by name, code, unit, dataset, or source. Region-specific indicators stay available whenever at least one selected country supports them."
+                helperText="Search by name, code, unit, dataset, or source. Compatible selections drive the year range automatically."
                 id="imf-indicator-search"
                 label="Indicators"
                 options={countryCompatibleIndicators}
@@ -216,16 +278,18 @@ export function ImfExplorer() {
                 onChange={setSelectedIndicators}
               />
 
-              <SelectDropdown
+              <DateToggle
                 disabled={isLoading}
-                emptyMessage="No latest-year options are available."
-                helperText="Choose a themed latest-years window. If the newest IMF window is unavailable, the export falls back to the last available range and tells you which years were used."
-                id="imf-latest-years"
-                label="Date Range"
-                options={LATEST_YEAR_OPTIONS}
-                placeholder="Choose a latest-years range..."
-                selectedValue={selectedLatestYears}
-                onChange={setSelectedLatestYears}
+                helperText={
+                  availableRange
+                    ? "Available years are based on the selected countries and indicators. If one series is missing a year inside this span, that cell stays blank in the export."
+                    : "Select at least one country and one indicator to load the available years for this selection."
+                }
+                isLoading={isRangeLoading}
+                maxYear={availableRange?.endYear ?? null}
+                minYear={availableRange?.startYear ?? null}
+                value={dateFilter}
+                onChange={setDateFilter}
               />
 
               <SelectionSummaryCard
@@ -254,11 +318,19 @@ export function ImfExplorer() {
                         ),
                       }
                     : { title: "" },
+                  {
+                    caption: availableRange
+                      ? `Available ${availableRange.startYear} to ${availableRange.endYear}. Missing years inside your selected span stay blank in the export.`
+                      : selectedCountries.length && selectedIndicators.length
+                        ? "Loading the available years for this selection."
+                        : "Select at least one country and one indicator to load the available years.",
+                    title: availableRange ? `Range: ${getDateFilterSummary(dateFilter)}` : "Range: Waiting for selection",
+                  },
                 ]}
               />
 
               <ActionButton
-                disabled={!selectedCountries.length || !selectedIndicators.length}
+                disabled={!selectedCountries.length || !selectedIndicators.length || !availableRange || isRangeLoading}
                 isLoading={isLoading}
                 loadingLabel="Preparing Download..."
                 type="submit"

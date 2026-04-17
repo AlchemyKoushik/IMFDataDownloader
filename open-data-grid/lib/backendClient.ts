@@ -3,10 +3,12 @@
 import type {
   ApiErrorPayload,
   ImfBulkDataRequestPayload,
+  ImfBulkSelectionPayload,
   ImfBulkSeriesResponsePayload,
   MetadataResponsePayload,
   SeriesResponsePayload,
 } from "@/types/imf";
+import type { AvailableYearRangePayload } from "@/types/dateFilter";
 
 const DEFAULT_API_BASE_URL = "http://localhost:8000";
 const METADATA_STORAGE_KEY = "imf-metadata-cache-v4";
@@ -200,6 +202,17 @@ export async function fetchBulkSeriesData(
   return requestJson<ImfBulkSeriesResponsePayload>("/imf/bulk-data", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchBulkSeriesRange(
+  payload: ImfBulkSelectionPayload,
+  signal?: AbortSignal,
+): Promise<AvailableYearRangePayload> {
+  return requestJson<AvailableYearRangePayload>("/imf/bulk-range", {
+    body: JSON.stringify(payload),
+    method: "POST",
+    signal,
   });
 }
 

@@ -3,7 +3,14 @@ from __future__ import annotations
 from fastapi import APIRouter, Request
 from fastapi.responses import StreamingResponse
 
-from app.models.request_models import BulkDataRequest, BulkSeriesResponse, DataRequest, MetadataResponse, SeriesResponse
+from app.models.request_models import (
+    AvailableYearRangeResponse,
+    BulkDataRequest,
+    BulkSeriesResponse,
+    DataRequest,
+    MetadataResponse,
+    SeriesResponse,
+)
 from app.services.imf_service import IMFService
 from app.utils.excel import build_excel_workbook, build_imf_grid_workbook
 
@@ -33,6 +40,13 @@ async def get_data(payload: DataRequest, request: Request):
 async def get_bulk_data(payload: BulkDataRequest, request: Request):
     service = get_imf_service(request)
     response = await service.get_bulk_series(payload)
+    return response.model_dump(by_alias=True)
+
+
+@router.post("/imf/bulk-range", response_model=AvailableYearRangeResponse)
+async def get_bulk_year_range(payload: BulkDataRequest, request: Request):
+    service = get_imf_service(request)
+    response = await service.get_bulk_year_range(payload)
     return response.model_dump(by_alias=True)
 
 

@@ -13,7 +13,9 @@ from fastapi.responses import JSONResponse
 
 from app.models.request_models import ErrorResponse
 from app.routes.data import router as data_router
+from app.routes.fred import router as fred_router
 from app.routes.worldbank import router as worldbank_router
+from app.services.fred_service import FREDService, FREDServiceError
 from app.services.imf_service import IMFService, IMFServiceError
 from app.services.worldbank_service import WorldBankService, WorldBankServiceError
 
@@ -49,6 +51,7 @@ async def lifespan(app: FastAPI):
     async with httpx.AsyncClient(timeout=timeout, headers=headers) as client:
         app.state.imf_service = IMFService(client)
         app.state.worldbank_service = WorldBankService(client)
+        app.state.fred_service = FREDService(client)
         logger.info("FastAPI backend started")
         yield
     logger.info("FastAPI backend stopped")
@@ -70,6 +73,7 @@ app.add_middleware(
 )
 
 app.include_router(data_router)
+app.include_router(fred_router, prefix="/fred")
 app.include_router(worldbank_router)
 
 
@@ -105,6 +109,13 @@ async def handle_imf_service_error(_: Request, exc: IMFServiceError) -> JSONResp
 
 @app.exception_handler(WorldBankServiceError)
 async def handle_worldbank_service_error(_: Request, exc: WorldBankServiceError) -> JSONResponse:
+    logger.warning("handled service error code=%s status=%s message=%s", exc.code, exc.status_code, exc.message)
+    payload = ErrorResponse(code=exc.code, message=exc.message, details=exc.details)
+    return JSONResponse(status_code=exc.status_code, content=payload.model_dump())
+
+
+@app.exception_handler(FREDServiceError)
+async def handle_fred_service_error(_: Request, exc: FREDServiceError) -> JSONResponse:
     logger.warning("handled service error code=%s status=%s message=%s", exc.code, exc.status_code, exc.message)
     payload = ErrorResponse(code=exc.code, message=exc.message, details=exc.details)
     return JSONResponse(status_code=exc.status_code, content=payload.model_dump())

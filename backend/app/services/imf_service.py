@@ -10,6 +10,7 @@ from typing import Any
 import httpx
 
 from app.models.request_models import (
+    AvailableYearRangeResponse,
     BulkDataRequest,
     BulkSeriesResponse,
     DataRequest,
@@ -291,6 +292,55 @@ def select_latest_year_rows(rows: list[GridObservation], latest_years: int) -> t
     return fallback_rows, warning
 
 
+def select_latest_observations(observations: list[Observation], latest_years: int) -> list[Observation]:
+    if not observations:
+        return []
+
+    current_year = time.gmtime().tm_year
+    target_start_year = current_year - latest_years + 1
+    requested_window_rows = [row for row in observations if target_start_year <= row.year <= current_year and row.value is not None]
+
+    if len(requested_window_rows) >= latest_years:
+        return requested_window_rows[-latest_years:]
+
+    return observations[-min(latest_years, len(observations)) :]
+
+
+def select_custom_observations(observations: list[Observation], start_year: int, end_year: int) -> list[Observation]:
+    value_by_year = {observation.year: observation.value for observation in observations}
+    return [Observation(year=year, value=value_by_year.get(year)) for year in range(start_year, end_year + 1)]
+
+
+def select_custom_year_rows(
+    rows: list[GridObservation],
+    start_year: int,
+    end_year: int,
+) -> tuple[list[GridObservation], str | None]:
+    if not rows:
+        return [], None
+
+    first_row = rows[0]
+    value_by_year = {row.year: row.value for row in rows}
+    selected_rows = [
+        GridObservation(
+            country=first_row.country,
+            indicator=first_row.indicator,
+            year=year,
+            value=value_by_year.get(year),
+        )
+        for year in range(start_year, end_year + 1)
+    ]
+
+    if not any(row.value is not None for row in selected_rows):
+        warning = f"{first_row.country} / {first_row.indicator}: no data was returned for the selected range."
+    elif any(row.value is None for row in selected_rows):
+        warning = f"{first_row.country} / {first_row.indicator}: some years in the selected range did not return values and were left blank."
+    else:
+        warning = None
+
+    return selected_rows, warning
+
+
 class IMFService:
     def __init__(self, client: httpx.AsyncClient):
         self._client = client
@@ -330,13 +380,19 @@ class IMFService:
     async def get_series(self, request: DataRequest) -> SeriesResponse:
         metadata = await self.get_metadata()
         result = await self._resolve_series(metadata, request.country, request.indicator)
+        observations = result.payload.data
+
+        if request.uses_preset_range():
+            observations = select_latest_observations(observations, request.years or 1)
+        elif request.uses_custom_range():
+            observations = select_custom_observations(observations, request.start_year or 1900, request.end_year or 1900)
 
         return SeriesResponse(
             country=request.country,
             countryLabel=result.country.label,
             indicator=result.resolved_indicator.value,
             indicatorLabel=result.resolved_indicator.label,
-            data=result.payload.data,
+            data=observations,
             usedFallback=result.used_fallback,
             message=result.message,
             lastUpdated=result.payload.last_updated,
@@ -344,26 +400,7 @@ class IMFService:
 
     async def get_bulk_series(self, request: BulkDataRequest) -> BulkSeriesResponse:
         metadata = await self.get_metadata()
-        countries_by_code = {country.value: country for country in metadata.countries}
-        indicators_by_code = {indicator.value: indicator for indicator in metadata.indicators}
-
-        missing_countries = [country_code for country_code in request.countries if country_code not in countries_by_code]
-        if missing_countries:
-            raise IMFServiceError(
-                "One or more selected countries are not available in the IMF catalog.",
-                400,
-                "COUNTRY_NOT_FOUND",
-                details=", ".join(missing_countries),
-            )
-
-        missing_indicators = [indicator_code for indicator_code in request.indicators if indicator_code not in indicators_by_code]
-        if missing_indicators:
-            raise IMFServiceError(
-                "One or more selected indicators are not available in the IMF catalog.",
-                400,
-                "INDICATOR_NOT_FOUND",
-                details=", ".join(missing_indicators),
-            )
+        self._validate_bulk_selection(metadata, request)
 
         tasks = [
             self._get_bulk_selection_result(metadata, country_code, indicator_code)
@@ -376,10 +413,18 @@ class IMFService:
         warnings: list[str] = []
         for selection_result in selection_results:
             next_rows = selection_result.rows
-            if request.latest_years is not None and selection_result.rows:
-                next_rows, latest_year_warning = select_latest_year_rows(selection_result.rows, request.latest_years)
+            if request.uses_preset_range() and selection_result.rows:
+                next_rows, latest_year_warning = select_latest_year_rows(selection_result.rows, request.years or 1)
                 if latest_year_warning:
                     warnings.append(latest_year_warning)
+            elif request.uses_custom_range() and selection_result.rows:
+                next_rows, custom_range_warning = select_custom_year_rows(
+                    selection_result.rows,
+                    request.start_year or 1900,
+                    request.end_year or 1900,
+                )
+                if custom_range_warning:
+                    warnings.append(custom_range_warning)
 
             rows.extend(next_rows)
             warnings.extend(selection_result.warnings)
@@ -394,6 +439,39 @@ class IMFService:
             rows=rows,
             totalRows=len(rows),
             warnings=warnings,
+            lastUpdated=self._utc_now(),
+        )
+
+    async def get_bulk_year_range(self, request: BulkDataRequest) -> AvailableYearRangeResponse:
+        metadata = await self.get_metadata()
+        self._validate_bulk_selection(metadata, request)
+
+        tasks = [
+            self._get_bulk_selection_result(metadata, country_code, indicator_code)
+            for country_code in request.countries
+            for indicator_code in request.indicators
+        ]
+        selection_results = await asyncio.gather(*tasks)
+
+        available_years = sorted(
+            {
+                row.year
+                for selection_result in selection_results
+                for row in selection_result.rows
+                if row.value is not None
+            }
+        )
+
+        if not available_years:
+            raise IMFServiceError(
+                "No IMF data is available for the selected countries and indicators.",
+                404,
+                "NO_DATA",
+            )
+
+        return AvailableYearRangeResponse(
+            startYear=available_years[0],
+            endYear=available_years[-1],
             lastUpdated=self._utc_now(),
         )
 
@@ -513,6 +591,28 @@ class IMFService:
         ]
 
         return BulkSelectionResult(rows=rows, warnings=warnings)
+
+    def _validate_bulk_selection(self, metadata: MetadataResponse, request: BulkDataRequest) -> None:
+        countries_by_code = {country.value: country for country in metadata.countries}
+        indicators_by_code = {indicator.value: indicator for indicator in metadata.indicators}
+
+        missing_countries = [country_code for country_code in request.countries if country_code not in countries_by_code]
+        if missing_countries:
+            raise IMFServiceError(
+                "One or more selected countries are not available in the IMF catalog.",
+                400,
+                "COUNTRY_NOT_FOUND",
+                details=", ".join(missing_countries),
+            )
+
+        missing_indicators = [indicator_code for indicator_code in request.indicators if indicator_code not in indicators_by_code]
+        if missing_indicators:
+            raise IMFServiceError(
+                "One or more selected indicators are not available in the IMF catalog.",
+                400,
+                "INDICATOR_NOT_FOUND",
+                details=", ".join(missing_indicators),
+            )
 
     async def _get_series_payload(self, country: str, indicator: str) -> SeriesPayload:
         cache_key = f"{normalize_code(country)}:{normalize_code(indicator)}"

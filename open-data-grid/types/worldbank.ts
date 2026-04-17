@@ -1,3 +1,4 @@
+import type { DateFilterRequestPayload } from "@/types/dateFilter";
 import type { SelectOption } from "@/types/imf";
 
 export interface WorldBankMetadataResponsePayload {
@@ -10,7 +11,7 @@ export interface WorldBankRow {
   country: string;
   indicator: string;
   year: number;
-  value: number;
+  value: number | null;
 }
 
 export interface WorldBankDataResponsePayload {
@@ -20,10 +21,12 @@ export interface WorldBankDataResponsePayload {
   lastUpdated: string;
 }
 
-export interface WorldBankDataRequestPayload {
+export interface WorldBankDataRequestPayload extends DateFilterRequestPayload {
   countries: string[];
   indicators: string[];
-  latestYears?: number;
-  startYear?: number;
-  endYear?: number;
+}
+
+export interface WorldBankSelectionPayload {
+  countries: string[];
+  indicators: string[];
 }

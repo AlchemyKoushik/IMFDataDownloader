@@ -15,6 +15,7 @@ interface SelectDropdownProps<T extends SelectOption> {
   options: T[];
   placeholder: string;
   selectedValue: string;
+  showMeta?: boolean;
 }
 
 export function SelectDropdown<T extends SelectOption>({
@@ -27,6 +28,7 @@ export function SelectDropdown<T extends SelectOption>({
   options,
   placeholder,
   selectedValue,
+  showMeta = true,
 }: SelectDropdownProps<T>) {
   const [isOpen, setIsOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -228,7 +230,7 @@ export function SelectDropdown<T extends SelectOption>({
 
                       <span className="resultContent">
                         <span className="resultTitle">{option.label}</span>
-                        <span className="resultMeta">{option.value}</span>
+                        {showMeta ? <span className="resultMeta">{option.value}</span> : null}
                       </span>
                     </button>
                   );

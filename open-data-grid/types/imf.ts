@@ -1,3 +1,5 @@
+import type { DateFilterRequestPayload } from "@/types/dateFilter";
+
 export interface SelectOption {
   label: string;
   value: string;
@@ -12,7 +14,7 @@ export interface IndicatorOption extends SelectOption {
 
 export interface NormalizedObservation {
   year: number;
-  value: number;
+  value: number | null;
 }
 
 export interface MetadataResponsePayload {
@@ -36,13 +38,17 @@ export interface ImfGridRow {
   country: string;
   indicator: string;
   year: number;
-  value: number;
+  value: number | null;
 }
 
-export interface ImfBulkDataRequestPayload {
+export interface ImfBulkDataRequestPayload extends DateFilterRequestPayload {
   countries: string[];
   indicators: string[];
-  latestYears?: number;
+}
+
+export interface ImfBulkSelectionPayload {
+  countries: string[];
+  indicators: string[];
 }
 
 export interface ImfBulkSeriesResponsePayload {

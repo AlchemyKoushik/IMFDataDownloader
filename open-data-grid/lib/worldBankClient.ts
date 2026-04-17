@@ -1,7 +1,9 @@
 "use client";
 
 import { downloadBackendFile, requestJson } from "@/lib/backendClient";
+import type { AvailableYearRangePayload } from "@/types/dateFilter";
 import type { WorldBankDataRequestPayload, WorldBankDataResponsePayload, WorldBankMetadataResponsePayload } from "@/types/worldbank";
+import type { WorldBankSelectionPayload } from "@/types/worldbank";
 
 const METADATA_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -44,6 +46,17 @@ export async function fetchWorldBankData(
   return requestJson<WorldBankDataResponsePayload>("/worldbank/data", {
     method: "POST",
     body: JSON.stringify(payload),
+  });
+}
+
+export async function fetchWorldBankAvailableRange(
+  payload: WorldBankSelectionPayload,
+  signal?: AbortSignal,
+): Promise<AvailableYearRangePayload> {
+  return requestJson<AvailableYearRangePayload>("/worldbank/range", {
+    body: JSON.stringify(payload),
+    method: "POST",
+    signal,
   });
 }
 

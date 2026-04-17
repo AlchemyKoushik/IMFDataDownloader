@@ -61,7 +61,7 @@ input {
   top: 18px;
   left: 50%;
   z-index: 40;
-  width: min(880px, calc(100% - 28px));
+  width: min(980px, calc(100% - 28px));
   transform: translateX(-50%);
 }
 
@@ -147,8 +147,11 @@ input {
   justify-content: center;
   min-height: 44px;
   padding: 0 18px;
+  border: 0;
   border-radius: 999px;
+  background: transparent;
   color: var(--text-secondary);
+  cursor: pointer;
   font-size: 0.95rem;
   font-weight: 700;
   transition:
@@ -170,6 +173,28 @@ input {
   box-shadow: inset 0 0 0 1px rgba(13, 124, 102, 0.12);
 }
 
+.navButton-comingSoon {
+  gap: 8px;
+}
+
+.navButtonLabel {
+  line-height: 1;
+}
+
+.navSoonBadge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 8px;
+  border-radius: 999px;
+  background: rgba(230, 150, 65, 0.16);
+  color: #8b5312;
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .appBootstrap,
 .appBootstrapContent {
   min-height: 100vh;
@@ -177,6 +202,98 @@ input {
 
 .appBootstrapContent {
   animation: contentReveal 480ms ease both;
+}
+
+.featureModalBackdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background:
+    radial-gradient(circle at top left, rgba(13, 124, 102, 0.18), transparent 30%),
+    radial-gradient(circle at bottom right, rgba(230, 150, 65, 0.16), transparent 28%),
+    rgba(16, 42, 51, 0.36);
+  backdrop-filter: blur(16px);
+}
+
+.featureModalPanel {
+  position: relative;
+  width: min(780px, 100%);
+  border: 1px solid rgba(255, 255, 255, 0.45);
+  border-radius: 32px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(248, 242, 233, 0.96)),
+    rgba(255, 255, 255, 0.9);
+  box-shadow:
+    0 38px 90px rgba(16, 42, 51, 0.28),
+    inset 0 1px 0 rgba(255, 255, 255, 0.72);
+  overflow: hidden;
+}
+
+.featureModalInner {
+  padding: 28px;
+}
+
+.featureModalClose {
+  position: absolute;
+  top: 18px;
+  right: 18px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 42px;
+  height: 42px;
+  border: 0;
+  border-radius: 14px;
+  background: rgba(16, 42, 51, 0.06);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    background 180ms ease,
+    color 180ms ease;
+}
+
+.featureModalClose:hover {
+  transform: translateY(-1px);
+  background: rgba(13, 124, 102, 0.12);
+  color: var(--accent-strong);
+}
+
+.featureModalClose svg {
+  width: 18px;
+  height: 18px;
+}
+
+.featureModalFooter {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 18px;
+}
+
+.featureModalGhost {
+  min-height: 48px;
+  padding: 0 18px;
+  border: 1px solid rgba(16, 42, 51, 0.1);
+  border-radius: 16px;
+  background: rgba(16, 42, 51, 0.04);
+  color: var(--text-secondary);
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    background 180ms ease,
+    color 180ms ease;
+}
+
+.featureModalGhost:hover {
+  transform: translateY(-1px);
+  border-color: rgba(13, 124, 102, 0.16);
+  background: rgba(13, 124, 102, 0.08);
+  color: var(--accent-strong);
 }
 
 .loadingScreen {
@@ -485,6 +602,251 @@ input {
     var(--surface-strong);
 }
 
+.fredComingSoonCard {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+  padding: 4px 2px 2px;
+}
+
+.fredComingSoonCard::before {
+  content: "";
+  position: absolute;
+  top: -42px;
+  right: -36px;
+  width: 180px;
+  height: 180px;
+  border-radius: 999px;
+  background: radial-gradient(circle, rgba(13, 124, 102, 0.16), transparent 68%);
+  pointer-events: none;
+}
+
+.fredComingSoonCard-compact {
+  gap: 16px;
+}
+
+.fredComingSoonTopline {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.fredComingSoonKicker {
+  color: var(--accent-strong);
+  font-size: 0.8rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.fredComingSoonBadge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 30px;
+  padding: 0 12px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(13, 124, 102, 0.14), rgba(230, 150, 65, 0.16));
+  color: var(--accent-strong);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  box-shadow: inset 0 0 0 1px rgba(13, 124, 102, 0.12);
+}
+
+.fredComingSoonHeadlineRow {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 18px;
+}
+
+.fredComingSoonHeadlineRow h2 {
+  margin: 0;
+  max-width: 14ch;
+  font-family: var(--font-heading);
+  font-size: clamp(2rem, 4vw, 3rem);
+  line-height: 0.96;
+  letter-spacing: -0.04em;
+}
+
+.fredComingSoonLead {
+  margin: 14px 0 0;
+  max-width: 58ch;
+  color: var(--text-secondary);
+  font-size: 1rem;
+  line-height: 1.65;
+}
+
+.fredComingSoonPulse {
+  position: relative;
+  display: grid;
+  place-items: center;
+  width: 86px;
+  height: 86px;
+  flex-shrink: 0;
+  border-radius: 28px;
+  background:
+    radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.9), transparent 42%),
+    linear-gradient(135deg, rgba(13, 124, 102, 0.16), rgba(230, 150, 65, 0.18));
+  box-shadow:
+    inset 0 0 0 1px rgba(13, 124, 102, 0.12),
+    0 18px 34px rgba(13, 124, 102, 0.12);
+}
+
+.fredComingSoonPulse span {
+  position: absolute;
+  border-radius: 999px;
+  border: 1px solid rgba(13, 124, 102, 0.16);
+  animation: fredPulse 2.8s ease-in-out infinite;
+}
+
+.fredComingSoonPulse span:nth-child(1) {
+  inset: 16px;
+}
+
+.fredComingSoonPulse span:nth-child(2) {
+  inset: 8px;
+  animation-delay: 0.3s;
+}
+
+.fredComingSoonPulse span:nth-child(3) {
+  inset: 0;
+  animation-delay: 0.6s;
+}
+
+.fredComingSoonFeatureGrid {
+  position: relative;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.fredComingSoonFeatureCard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 18px;
+  border: 1px solid rgba(16, 42, 51, 0.08);
+  border-radius: 20px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(250, 246, 238, 0.86)),
+    rgba(255, 255, 255, 0.76);
+  box-shadow: 0 16px 32px rgba(16, 42, 51, 0.08);
+}
+
+.fredComingSoonFeatureCard strong {
+  font-size: 0.98rem;
+}
+
+.fredComingSoonFeatureCard p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
+.fredComingSoonFeatureIndex {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 12px;
+  background: rgba(13, 124, 102, 0.12);
+  color: var(--accent-strong);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.fredComingSoonStatusRow {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border: 1px solid rgba(13, 124, 102, 0.12);
+  border-radius: 22px;
+  background:
+    linear-gradient(135deg, rgba(13, 124, 102, 0.08), rgba(230, 150, 65, 0.08)),
+    rgba(255, 255, 255, 0.68);
+}
+
+.fredComingSoonStatus {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-secondary);
+  font-size: 0.94rem;
+  line-height: 1.5;
+}
+
+.fredComingSoonStatusDot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 6px rgba(13, 124, 102, 0.12);
+  flex-shrink: 0;
+}
+
+.fredComingSoonActionRow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.fredComingSoonPrimary,
+.fredComingSoonSecondary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 48px;
+  padding: 0 18px;
+  border-radius: 16px;
+  font-weight: 700;
+  transition:
+    transform 180ms ease,
+    box-shadow 180ms ease,
+    border-color 180ms ease,
+    background 180ms ease,
+    color 180ms ease;
+}
+
+.fredComingSoonPrimary {
+  background:
+    linear-gradient(135deg, #0d7c66, #0b5f4f),
+    var(--accent);
+  color: #f6fff9;
+  box-shadow: 0 16px 30px rgba(13, 124, 102, 0.2);
+}
+
+.fredComingSoonPrimary:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 20px 34px rgba(13, 124, 102, 0.24);
+}
+
+.fredComingSoonSecondary {
+  border: 1px solid rgba(16, 42, 51, 0.1);
+  background: rgba(255, 255, 255, 0.72);
+  color: var(--text-primary);
+}
+
+.fredComingSoonSecondary:hover {
+  transform: translateY(-1px);
+  border-color: rgba(13, 124, 102, 0.16);
+  background: rgba(13, 124, 102, 0.08);
+}
+
 .panelForm {
   display: flex;
   flex-direction: column;
@@ -551,10 +913,14 @@ input {
   display: flex;
   align-items: center;
   min-height: 56px;
-  border: 1px solid rgba(16, 42, 51, 0.14);
+  border: 1px solid rgba(16, 42, 51, 0.12);
   border-radius: 18px;
-  background: linear-gradient(180deg, rgba(255, 255, 255, 0.94), rgba(255, 252, 247, 0.96));
-  box-shadow: var(--shadow-soft);
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 243, 235, 0.98)),
+    rgba(255, 255, 255, 0.94);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    var(--shadow-soft);
   transition:
     border-color 180ms ease,
     box-shadow 180ms ease,
@@ -563,6 +929,7 @@ input {
 
 .dropdownShell:hover {
   transform: translateY(-1px);
+  border-color: rgba(13, 124, 102, 0.18);
 }
 
 .dropdownShell:focus-within,
@@ -701,12 +1068,14 @@ input:focus-visible {
   flex-direction: column;
   gap: 12px;
   padding: 14px;
-  border: 1px solid rgba(16, 42, 51, 0.1);
+  border: 1px solid rgba(13, 124, 102, 0.12);
   border-radius: 22px;
   background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.98), rgba(249, 245, 237, 0.98)),
+    linear-gradient(180deg, rgba(255, 255, 255, 0.99), rgba(247, 241, 231, 0.98)),
     rgba(255, 255, 255, 0.96);
-  box-shadow: 0 28px 60px rgba(16, 42, 51, 0.16);
+  box-shadow:
+    0 30px 70px rgba(16, 42, 51, 0.16),
+    0 10px 22px rgba(13, 124, 102, 0.08);
 }
 
 .dropdownMetaRow {
@@ -763,7 +1132,9 @@ input:focus-visible {
   padding: 14px 16px;
   border: 1px solid rgba(16, 42, 51, 0.08);
   border-radius: 16px;
-  background: rgba(255, 255, 255, 0.78);
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(251, 247, 240, 0.82)),
+    rgba(255, 255, 255, 0.78);
   color: var(--text-primary);
   text-align: left;
   cursor: pointer;
@@ -777,17 +1148,23 @@ input:focus-visible {
 .resultOption:hover {
   transform: translateY(-1px);
   border-color: rgba(13, 124, 102, 0.22);
-  background: rgba(13, 124, 102, 0.08);
+  background:
+    linear-gradient(180deg, rgba(13, 124, 102, 0.1), rgba(230, 150, 65, 0.08)),
+    rgba(13, 124, 102, 0.08);
 }
 
 .resultOption-active {
   border-color: rgba(13, 124, 102, 0.22);
-  background: rgba(13, 124, 102, 0.08);
+  background:
+    linear-gradient(180deg, rgba(13, 124, 102, 0.1), rgba(230, 150, 65, 0.08)),
+    rgba(13, 124, 102, 0.08);
 }
 
 .resultOption-selected {
   border-color: rgba(13, 124, 102, 0.28);
-  background: rgba(13, 124, 102, 0.12);
+  background:
+    linear-gradient(180deg, rgba(13, 124, 102, 0.14), rgba(230, 150, 65, 0.1)),
+    rgba(13, 124, 102, 0.12);
   box-shadow: inset 0 0 0 1px rgba(13, 124, 102, 0.12);
 }
 
@@ -854,6 +1231,199 @@ input:focus-visible {
   font-size: 0.98rem;
 }
 
+.dateToggle {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border: 1px solid rgba(13, 124, 102, 0.12);
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(247, 241, 232, 0.94)),
+    rgba(255, 255, 255, 0.78);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.76),
+    var(--shadow-soft);
+}
+
+.dateToggle-disabled {
+  opacity: 0.72;
+}
+
+.dateModeSwitch {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+  padding: 6px;
+  border-radius: 18px;
+  background: rgba(16, 42, 51, 0.06);
+}
+
+.dateModeThumb {
+  position: absolute;
+  top: 6px;
+  bottom: 6px;
+  left: 6px;
+  width: calc(50% - 9px);
+  border-radius: 14px;
+  background: linear-gradient(135deg, rgba(13, 124, 102, 0.18), rgba(230, 150, 65, 0.16));
+  box-shadow:
+    inset 0 0 0 1px rgba(13, 124, 102, 0.12),
+    0 14px 24px rgba(16, 42, 51, 0.08);
+  transition: transform 220ms ease;
+}
+
+.dateModeThumb-custom {
+  transform: translateX(calc(100% + 6px));
+}
+
+.dateModeButton {
+  position: relative;
+  z-index: 1;
+  min-height: 48px;
+  padding: 0 14px;
+  border: 0;
+  border-radius: 14px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-weight: 700;
+  cursor: pointer;
+  transition: color 180ms ease, transform 180ms ease;
+}
+
+.dateModeButton:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.dateModeButton-active {
+  color: var(--accent-strong);
+}
+
+.datePresetGrid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.datePresetButton {
+  min-height: 50px;
+  border: 1px solid rgba(16, 42, 51, 0.08);
+  border-radius: 16px;
+  background: rgba(255, 255, 255, 0.82);
+  color: var(--text-secondary);
+  font-weight: 700;
+  cursor: pointer;
+  transition:
+    transform 180ms ease,
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    color 180ms ease,
+    background 180ms ease;
+}
+
+.datePresetButton:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(13, 124, 102, 0.18);
+}
+
+.datePresetButton-active {
+  border-color: rgba(13, 124, 102, 0.22);
+  background: linear-gradient(135deg, rgba(13, 124, 102, 0.12), rgba(230, 150, 65, 0.12));
+  color: var(--accent-strong);
+  box-shadow: inset 0 0 0 1px rgba(13, 124, 102, 0.12);
+}
+
+.dateCustomGrid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.dateCustomGrid > * {
+  min-width: 0;
+}
+
+.dateSelectField {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+.dateSelectWrap {
+  position: relative;
+}
+
+.dateSelect {
+  width: 100%;
+  min-height: 52px;
+  padding: 0 52px 0 16px;
+  border: 1px solid rgba(16, 42, 51, 0.12);
+  border-radius: 18px;
+  appearance: none;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 242, 232, 0.98)),
+    rgba(255, 255, 255, 0.94);
+  color: var(--text-primary);
+  font: inherit;
+  cursor: pointer;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    0 10px 24px rgba(16, 42, 51, 0.07);
+  transition:
+    border-color 180ms ease,
+    box-shadow 180ms ease,
+    transform 180ms ease;
+}
+
+.dateSelect:hover:not(:disabled) {
+  transform: translateY(-1px);
+  border-color: rgba(13, 124, 102, 0.18);
+}
+
+.dateSelect:focus {
+  outline: none;
+  border-color: var(--border-strong);
+  box-shadow:
+    0 0 0 4px var(--accent-glow),
+    0 10px 24px rgba(16, 42, 51, 0.07);
+}
+
+.dateSelect:disabled {
+  cursor: not-allowed;
+}
+
+.dateSelectChevron {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 12px;
+  background: rgba(13, 124, 102, 0.1);
+  color: var(--accent-strong);
+  pointer-events: none;
+  transform: translateY(-50%);
+}
+
+.dateSelectChevron svg {
+  width: 16px;
+  height: 16px;
+}
+
+.dateToggleHint {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: 0.9rem;
+  line-height: 1.55;
+}
+
 .selectionPreview span,
 .selectionPreview small {
   color: var(--text-secondary);
@@ -875,6 +1445,155 @@ input:focus-visible {
   display: flex;
   flex-direction: column;
   gap: 4px;
+}
+
+.fredSearchPanel,
+.fredSelectedPanel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 16px;
+  border: 1px solid rgba(16, 42, 51, 0.08);
+  border-radius: 22px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.92), rgba(248, 244, 236, 0.94)),
+    rgba(255, 255, 255, 0.84);
+  box-shadow: var(--shadow-soft);
+}
+
+.fredSearchInputWrap {
+  display: flex;
+  align-items: center;
+  min-height: 56px;
+  border: 1px solid rgba(16, 42, 51, 0.12);
+  border-radius: 18px;
+  background:
+    linear-gradient(135deg, rgba(255, 255, 255, 0.96), rgba(248, 243, 235, 0.98)),
+    rgba(255, 255, 255, 0.94);
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.72),
+    var(--shadow-soft);
+}
+
+.fredSearchIcon {
+  flex-shrink: 0;
+}
+
+.fredSearchInput {
+  width: 100%;
+  min-height: 56px;
+  padding: 0 18px 0 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+}
+
+.fredSearchInput:focus {
+  outline: none;
+}
+
+.fredResultList {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-height: 320px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.fredResultCard {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 14px 16px;
+  border: 1px solid rgba(16, 42, 51, 0.08);
+  border-radius: 16px;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.88), rgba(251, 247, 240, 0.82)),
+    rgba(255, 255, 255, 0.78);
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease,
+    box-shadow 160ms ease;
+}
+
+.fredResultCard:hover {
+  transform: translateY(-1px);
+  border-color: rgba(13, 124, 102, 0.22);
+  background:
+    linear-gradient(180deg, rgba(13, 124, 102, 0.1), rgba(230, 150, 65, 0.08)),
+    rgba(13, 124, 102, 0.07);
+}
+
+.fredResultCard-selected {
+  border-color: rgba(13, 124, 102, 0.28);
+  background:
+    linear-gradient(180deg, rgba(13, 124, 102, 0.14), rgba(230, 150, 65, 0.1)),
+    rgba(13, 124, 102, 0.12);
+  box-shadow: inset 0 0 0 1px rgba(13, 124, 102, 0.12);
+}
+
+.fredResultCheckbox {
+  width: 18px;
+  height: 18px;
+  margin-top: 2px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+
+.fredResultBody {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.fredSelectedPanel {
+  min-height: 96px;
+}
+
+.fredSelectedEmpty {
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.fredSelectedChip {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid rgba(16, 42, 51, 0.08);
+  border-radius: 16px;
+  background: rgba(16, 42, 51, 0.04);
+  color: var(--text-primary);
+  text-align: left;
+  cursor: pointer;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+.fredSelectedChip:hover {
+  transform: translateY(-1px);
+  border-color: rgba(13, 124, 102, 0.18);
+  background: rgba(13, 124, 102, 0.08);
+}
+
+.fredSelectedChip span,
+.fredSelectedChip small {
+  min-width: 0;
+}
+
+.fredSelectedChip small {
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+  white-space: nowrap;
 }
 
 .downloadButton {
@@ -1016,6 +1735,19 @@ input:focus-visible {
   }
 }
 
+@keyframes fredPulse {
+  0%,
+  100% {
+    opacity: 0.32;
+    transform: scale(0.92);
+  }
+
+  50% {
+    opacity: 0.72;
+    transform: scale(1);
+  }
+}
+
 @media (max-width: 900px) {
   .floatingNavWrap {
     width: min(100% - 20px, 680px);
@@ -1074,6 +1806,30 @@ input:focus-visible {
 
   .statsRow {
     grid-template-columns: 1fr;
+  }
+
+  .dateCustomGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .fredComingSoonHeadlineRow,
+  .fredComingSoonStatusRow {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .fredComingSoonFeatureGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .fredComingSoonActionRow {
+    width: 100%;
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .featureModalInner {
+    padding: 22px;
   }
 }
 

@@ -19,7 +19,7 @@ const bodyFont = IBM_Plex_Sans({
 
 export const metadata: Metadata = {
   title: "Alchemy's Open Data Grid",
-  description: "Unified IMF and World Bank open data explorer with backend-powered normalization and Excel export.",
+  description: "Unified IMF, World Bank, and FRED data explorer with backend-powered normalization and Excel export.",
   icons: {
     icon: "/favicon.ico",
     shortcut: "/favicon.ico",
